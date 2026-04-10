@@ -1,0 +1,13 @@
+stages:
+  - mirror
+
+mirror:
+  stage: mirror
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: 0
+  script:
+    - git checkout -B main
+    - git push --mirror git@github.com:arcnode-io/ems.git
+  only:
+    - main
