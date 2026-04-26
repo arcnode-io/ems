@@ -10,7 +10,7 @@
 
 We need to design a system architecture for a modern energy management platform that:
 
-1. **Handles diverse industrial protocols** (Modbus, DNP3, BACnet, SNMP, OCPP, CANbus)
+1. **Handles diverse industrial protocols** (Modbus, DNP3, Redfish, SNMP, CANbus)
 2. **Processes real-time telemetry** at 2-second intervals from grid equipment
 3. **Supports both cloud and on-premise deployments** with different operational models
 4. **Enables ML forecasting and AI-powered analysis** of energy data
@@ -106,6 +106,23 @@ See [`ems/readme.md`](readme.md) for live topology, sequence, and deployment dia
 - No runtime infrastructure dependency between Arcnode and the operator's EMS
 - Versioned releases (ISO + CFN template + APK) are published manually via `POST /admin/releases` and fanned out to all active deployments
 
+#### 6. SLD Topology in DTM, Rendered Programmatically by HMI
+
+**Decision**: Electrical bus topology is encoded in a `buses[]` block in the DTM. `ems-hmi` renders the SLD from DTM data at runtime — it is not a hand-drawn per-deployment SVG.
+
+**Rationale**:
+- DTM is already the single source of truth for per-deployment data; bus topology is a relationship between DTM `device_id`s, not a separate concern
+- Per-deployment SVG authoring doesn't scale and breaks on every site change
+- `edp-api` already has the full electrical design (sizing payload) and is the natural author of `buses[]`
+- IEC 61850-aligned: `buses[].id` = `ConnectivityNode`, `buses[].type` = `VoltageLevel` domain, `buses[].members[]` = `Terminal` references; `port` = Terminal name for bridging devices
+
+**Implications**:
+- `edp-api` computes `buses[]` from the sizing payload when it generates the DTM — it produces both in the same job
+- `buses[]` entries are validated against `devices`: every `member.device_id` must resolve to a declared device
+- Bus bars are not devices — they carry no `device_id` in `devices`, no MQTT topics, no class
+- `ems-hmi` renders bus bars as horizontal bars with device nodes hanging off them; live MQTT measurements overlay each device node keyed by `device_id`
+- Legacy approach (hand-drawn per-site SVG, e.g. Fractal) rejected: breaks on topology changes, doesn't scale
+
 ## Implementation Details
 
 See [`ems/readme.md`](readme.md) for cloud (AWS) and on-prem (ISO) deployment diagrams and data flow sequences.
@@ -113,6 +130,7 @@ See [`ems/readme.md`](readme.md) for cloud (AWS) and on-prem (ISO) deployment di
 ## Consequences
 
 ### Positive
+- **UTC-only timestamps**: All timestamps — sensor samples, API responses, UI display — are UTC epoch milliseconds. No local-time conversion at any layer; operators do their own offset math.
 - **Industry Alignment**: Uses familiar patterns for energy sector teams
 - **Educational Value**: Exposure to modern cloud-native stack
 - **Flexibility**: Supports diverse protocols and deployment models

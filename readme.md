@@ -15,7 +15,12 @@ are
 
 ## Project Description
 
-The EMS (Energy Management System) suite is the software that runs on a deployed Arcnode stack. It allows you to model different smart grid systems. For example, you could model a dynamic dlr system with a datacenter load. The bess could be modeled with canbus measurements and the datacenter could be modeled as snmp and bacnet readings.
+The EMS (Energy Management System) suite is the software that runs on a deployed Arcnode stack. It allows you to model different smart grid systems. For example, you could model a dynamic dlr system with a datacenter load. The bess could be modeled with canbus measurements and the datacenter could be modeled as snmp and redfish readings.
+
+## Decisions
+
+- [ADR-001: System Architecture](system_adr.md)
+- [ADR-002: MQTT Topic Structure and Payload Conventions](topic_structure_adr.md)
 
 # Diagrams
 
@@ -41,29 +46,30 @@ rectangle cluster #line.dashed {
     collections ems_hmi
     person llm
     rectangle domain_mcp_server
-dlr_sensors -d- line_controller
-phase_shift_transformer -d- line_controller
-mock_industrial_protocols -d- industrial_gateway
-ercot_api -r- timeseries
-line_controller -d- device_api
-industrial_gateway -d- device_api
-device_api -d- ems_hmi
-device_api -r- document
-timeseries -r- analyst_api
-domain_mcp_server -u- llm
-vector -u- domain_mcp_server
-graph -u- domain_mcp_server
-analyst_api -d- ems_hmi
-llm -u- analyst_api
-llm -l- third_party_apis
+}
+dlr_sensors -d-> line_controller: mqtt
+line_controller -u-> phase_shift_transformer: mqtt
+industrial_gateway -u-> mock_industrial_protocols: modbus / snmp / dnp3 / redfish / canbus
+ercot_api -r-> timeseries: http
+line_controller -d-> device_api: http
+industrial_gateway -d-> device_api: http
+ems_hmi -u-> device_api: http
+device_api -r-> document: sql
+analyst_api -l-> timeseries: sql
+llm -d-> domain_mcp_server: mcp
+domain_mcp_server -d-> vector: sql
+domain_mcp_server -d-> graph: cypher
+ems_hmi -u-> analyst_api: http
+analyst_api -d-> llm: http
+llm -l-> third_party_apis: http
 ```
 > &ast; MQTT broker ommited for simplicity <br>
-> &ast;&ast; canbus, modbus, dnp3, snmp, bacnet, and ocpp, 
+> &ast;&ast; canbus, modbus, dnp3, snmp, and redfish, 
  
 ## Sequence
 
 ```plantuml
-actor operator
+participant ems_startup
 participant device_api
 database document
 participant industrial_gateway
@@ -78,12 +84,15 @@ participant analyst_api
 participant ems_hmi
 participant ercot_api
 collections third_party_apis
-operator -> device_api: POST /topology (from DTM)
+== bootstrap ==
+ems_startup -> device_api: mount /etc/ems/dtm.json (from ISO/CFN payload)
+device_api -> device_api: load DTM from disk
 device_api -> document: generate AsyncAPI v3 spec
 == distribute topics ==
 industrial_gateway -> device_api: GET /asyncapi
 line_controller -> device_api: GET /asyncapi
 ems_hmi -> device_api: GET /asyncapi
+ems_hmi -> device_api: GET /topology\n(devices + buses[] for module browser + SLD)
 ==  initialize messaging ==
 industrial_gateway -> broker: pub grid protocols
 line_controller -> broker: pub direct sensor data
@@ -105,6 +114,35 @@ analyst_api -> llm: prediction response
 llm -> analyst_api: synthesizes rag dbs and apis call
 analyst_api -> ems_hmi: renders chat
 ```
+
+## Topology Update Sequence
+
+Topology changes only via redeployment. The DTM is delivered by `platform-api` (CFN update or new ISO) and posted programmatically to `device-api`. The HMI has no topology editor.
+
+```plantuml
+participant platform_api
+participant device_api
+database document
+queue broker
+participant industrial_gateway
+participant line_controller
+participant ems_hmi
+
+platform_api -> device_api: POST /topology (new DTM)
+device_api -> document: regenerate AsyncAPI v3 spec (semver bump)
+device_api -> broker: publish system/topology_changed { ts, version }
+broker -> industrial_gateway: forward
+broker -> line_controller: forward
+broker -> ems_hmi: forward
+industrial_gateway -> device_api: GET /asyncapi
+line_controller -> device_api: GET /asyncapi
+ems_hmi -> device_api: GET /asyncapi
+industrial_gateway -> industrial_gateway: diff + reconcile topic subs
+line_controller -> line_controller: diff + reconcile topic subs
+ems_hmi -> ems_hmi: diff + reconcile topic subs
+```
+
+All topology changes — including renames, display-name overrides, and sizing changes — flow through the configurator → platform-api → edp-api → device-api path. No in-EMS topology editing.
 
 ## Cloud Deployment (AWS)
 
