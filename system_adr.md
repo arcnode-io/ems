@@ -92,19 +92,21 @@ See [`ems/readme.md`](readme.md) for live topology, sequence, and deployment dia
 - Library-agnostic interfaces required
 
 #### 5. Two Deployment Paths: CloudFormation or Air-Gapped ISO
-**Decision**: Operator deploys via a CFN deep link (AWS standard or GovCloud) or a self-contained ISO image (air-gapped / defense). No Kubernetes. No IaC tooling on the operator's side.
+**Decision**: Operator deploys via a per-order CFN yaml download (AWS standard or GovCloud) or a self-contained ISO image (air-gapped / defense). No Kubernetes. No IaC tooling on the operator's side.
 
 **Rationale**:
 - Operators should not need K8s expertise to run an EMS
-- CFN is a single click in the operator's own AWS console — Arcnode has no access to the resulting stack
+- Per-order CFN yaml is downloaded from the portal and deployed by the operator via `aws cloudformation create-stack` CLI or AWS Console upload — Arcnode has no access to the resulting stack
+- Each yaml is a complete, standalone artifact baking deployment_uuid + dtm_url + ems_mode directly in; eliminates release-coordination overhead
 - ISO embeds the DTM, SSH key, and ems_mode directly — no network round-trips post-delivery
 - `aws_partition` determines the path: `standard` / `govcloud` → CFN, `none` → ISO
 - `deployment_context == defense_forward` locks to ISO
 
 **Implications**:
-- `platform-api` composes the CFN template and builds the ISO — both are per-deployment artifacts templated from the DTM
+- `platform-api` composes the per-order CFN template on demand (no release dance) and uploads yaml to S3 as `orders/{id}/ems-stack.yaml`
+- Operator downloads from the delivery portal and runs locally — full control, no single-click convenience, but no hidden state
 - No runtime infrastructure dependency between Arcnode and the operator's EMS
-- Versioned releases (ISO + CFN template + APK) are published manually via `POST /admin/releases` and fanned out to all active deployments
+- ISO path unchanged: self-contained image with DTM + SSH key + ems_mode baked in
 
 #### 6. SLD Topology in DTM, Rendered Programmatically by HMI
 
