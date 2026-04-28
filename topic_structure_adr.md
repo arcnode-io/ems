@@ -155,7 +155,21 @@ The `EnumSample` channel schema in the generated AsyncAPI spec sets `value.enum`
 - Class definitions are the single PR-gated vocabulary surface, kept in the `arcnode` meta repo at `arcnode/device_classes/` for MVP. Promote to a dedicated repo when class count exceeds ~6 or external integrators need consumption-only access.
 - Custom one-off measurements use a per-device `extra_measurements:` escape hatch in the DTM. Use sparingly.
 
-**Class hierarchy mirrors hardware:** the four 10ft ISO container modules from the marketing surface (`bess_module`, `compute_module`, `thermal_module`, `grid_module`) are module-level classes. Equipment within each module (cells, GPUs, chillers, PCS, etc.) are equipment-level subclasses. Module classes declare a `contains:` block listing required and scalable equipment subclasses. The DTM hierarchy maps to `ems-device-api`'s two-level addressing: module = device-0, equipment = device-1 with `parent: module_id`. IEC 61850 alignment is carried as optional metadata (`iec_61850.logical_nodes`, `iec_61850_ref` per measurement) for the MVP — strict structural superset is a v1.x goal once an SCD import path lands.
+**Class hierarchy mirrors hardware:** the four 10ft ISO container modules from the marketing surface (`bess_module`, `compute_module`, `thermal_module`, `grid_module`) are module-level classes — they sit at the root of the device tree. Equipment within each module is represented as descendant devices at any depth (a Tesla-Megapack-style BESS has Megapack → racks → BMS/inverter/cells; a compute module has cluster → chassis → server → GPU). Each class declares a `contains:` block listing its direct child classes (required and scalable). Containment chains arbitrarily — a `bess_module` contains `bess_rack`, which contains `bess_cell`, etc. The DTM expresses this as a parent-chain tree: every device has an optional `parent: device_id` pointer, and depth is unbounded. Topic addressing stays flat — `device_id` in the topic is the leaf identifier, not a path; depth lives in the parent chain, walked by HMI/analyst codegen at render time. IEC 61850 alignment is carried as optional metadata (`iec_61850.logical_nodes`, `iec_61850_ref` per measurement) for the MVP — strict structural superset is a v1.x goal once an SCD import path lands.
+
+Example tree (Megapack-shaped):
+
+```
+bess_module_01            class: bess_module.v1, parent: null
+├── bess_rack_01          class: bess_rack.v1,   parent: bess_module_01
+│   ├── bess_bms_01       class: bess_bms.v1,    parent: bess_rack_01
+│   ├── bess_inverter_01  class: bess_inverter.v1, parent: bess_rack_01
+│   └── bess_cell_001..N  class: bess_cell.v1,   parent: bess_rack_01
+├── bess_rack_02
+└── ...
+```
+
+Each level can declare its own measurements/commands. Module-level rollups (whole-Megapack SOC), rack-level rollups (rack 7 spread), and cell-level reads (cell 042 voltage) are independent channels, all flat in the topic, related only by `parent` links in the DTM.
 
 #### 8. Two-Layer Naming: Canonical (Stable) + Display (Customer-Owned)
 
