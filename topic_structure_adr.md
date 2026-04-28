@@ -142,34 +142,38 @@ The `EnumSample` channel schema in the generated AsyncAPI spec sets `value.enum`
 | start, stop, enable, disable | Boolean (persistent state) |
 | reset, clear | Trigger |
 
-#### 7. Device-Class Templates as Canonical Vocabulary Source
+#### 7. Device Templates as Canonical Vocabulary Source
 
-**Decision**: Measurements, commands, and units for each device type live in a versioned device-class definition (e.g. `bess.v1`, `dlr_sensor.v1`). The DTM references classes; it does not redefine measurements per deployment.
+**Decision**: Measurements, commands, units, and protocol bindings for each device type live in a versioned **device template** (e.g. `bess_module.v1`, `dlr_sensor.v1`). The DTM references templates by `${name}.${version}` slug; it does not redefine measurements per deployment.
+
+We use *template* rather than *class* deliberately — "class" is OOP jargon that doesn't translate to industrial operators or integrators, while *template* is the standard SCADA/HMI term for "a definition you instantiate." OPC UA's *ObjectType*, IEC 61850's *Logical Node Type*, BACnet's *ObjectType*, and Sparkplug's *Device Definition* all model the same concept; we picked the term that reads cleanly in operator-facing UI, ADR text, and code without overloading either *type* or *profile* (the latter collides with IEC 61850 conformance profiles).
 
 **Rationale**:
-- Bikeshedding ("`voltage_dc` here, `dc_voltage` there") resolved once at class-design time
-- Aligns with arcnode's modular hardware — ~4 module types = ~4 top-level device classes
-- Class versioning is independent: `bess.v1` → `bess.v2` is a measurable upgrade with its own semver
+- Bikeshedding ("`voltage_dc` here, `dc_voltage` there") resolved once at template-design time
+- Aligns with arcnode's modular hardware — ~4 module-level templates as roots, equipment templates beneath
+- Template versioning is independent: `bess_module.v1` → `bess_module.v2` is a measurable upgrade with its own semver
 
 **Implications**:
-- Class definitions are the single PR-gated vocabulary surface, kept in the `arcnode` meta repo at `arcnode/device_classes/` for MVP. Promote to a dedicated repo when class count exceeds ~6 or external integrators need consumption-only access.
+- Templates are the single PR-gated vocabulary surface. Canonical authoring home is the `arcnode` meta repo at `arcnode/device_templates/`. Promote to a dedicated repo when template count exceeds ~6 or external integrators need consumption-only access.
+- `edp-api` is the **sole runtime reader** of the template directory. It walks `arcnode/device_templates/` at startup, validates every YAML, and uses the templates for sizing.
+- DTMs are **self-describing**: `edp-api` embeds a `templates_used: Record<templateRef, DeviceTemplate>` map in every DTM payload it emits, containing exactly the templates referenced by the `devices` block. Downstream consumers (`ems-device-api`, `ems-hmi`, analyst, gateway) receive everything they need in one POST — no separate template-catalog endpoint, no separate fetch.
 - Custom one-off measurements use a per-device `extra_measurements:` escape hatch in the DTM. Use sparingly.
 
-**Class hierarchy mirrors hardware:** the four 10ft ISO container modules from the marketing surface (`bess_module`, `compute_module`, `thermal_module`, `grid_module`) are module-level classes — they sit at the root of the device tree. Equipment within each module is represented as descendant devices at any depth (a Tesla-Megapack-style BESS has Megapack → racks → BMS/inverter/cells; a compute module has cluster → chassis → server → GPU). Each class declares a `contains:` block listing its direct child classes (required and scalable). Containment chains arbitrarily — a `bess_module` contains `bess_rack`, which contains `bess_cell`, etc. The DTM expresses this as a parent-chain tree: every device has an optional `parent: device_id` pointer, and depth is unbounded. Topic addressing stays flat — `device_id` in the topic is the leaf identifier, not a path; depth lives in the parent chain, walked by HMI/analyst codegen at render time. IEC 61850 alignment is carried as optional metadata (`iec_61850.logical_nodes`, `iec_61850_ref` per measurement) for the MVP — strict structural superset is a v1.x goal once an SCD import path lands.
+**Template hierarchy mirrors hardware:** the four 10ft ISO container modules from the marketing surface (`bess_module`, `compute_module`, `thermal_module`, `grid_module`) are module-level templates — they sit at the root of the device tree. Equipment within each module is represented as descendant devices at any depth. Real industrial hierarchies (Tesla-Megapack-style BESS = module → rack → BMS/inverter/cells; NVIDIA H100 cluster = cluster → chassis → server → GPU; thermal plant = plant → chiller → pump/CRAH/sensor) all map naturally to this shape. Each template declares a `contains:` block listing its direct child templates (required and scalable). Containment chains arbitrarily — a `bess_module` contains `bess_rack`, which contains `bess_cell`, etc. The DTM expresses this as a parent-chain tree: every device has an optional `parent: device_id` pointer, and depth is unbounded. Topic addressing stays flat — `device_id` in the topic is the leaf identifier, not a path; depth lives in the parent chain, walked by HMI/analyst codegen at render time. IEC 61850 alignment is carried as optional metadata (`iec_61850.logical_nodes`, `iec_61850_ref` per measurement) for the MVP — strict structural superset is a v1.x goal once an SCD import path lands.
 
-Example tree (Megapack-shaped):
+Example tree (BESS-shaped, applies equally to compute/thermal/grid):
 
 ```
-bess_module_01            class: bess_module.v1, parent: null
-├── bess_rack_01          class: bess_rack.v1,   parent: bess_module_01
-│   ├── bess_bms_01       class: bess_bms.v1,    parent: bess_rack_01
-│   ├── bess_inverter_01  class: bess_inverter.v1, parent: bess_rack_01
-│   └── bess_cell_001..N  class: bess_cell.v1,   parent: bess_rack_01
+bess_module_01            template: bess_module.v1, parent: null
+├── bess_rack_01          template: bess_rack.v1,   parent: bess_module_01
+│   ├── bess_bms_01       template: bess_bms.v1,    parent: bess_rack_01
+│   ├── bess_inverter_01  template: bess_inverter.v1, parent: bess_rack_01
+│   └── bess_cell_001..N  template: bess_cell.v1,   parent: bess_rack_01
 ├── bess_rack_02
 └── ...
 ```
 
-Each level can declare its own measurements/commands. Module-level rollups (whole-Megapack SOC), rack-level rollups (rack 7 spread), and cell-level reads (cell 042 voltage) are independent channels, all flat in the topic, related only by `parent` links in the DTM.
+Each level can declare its own measurements/commands. Module-level rollups (whole-module SOC), mid-level rollups (rack 7 spread), and leaf reads (cell 042 voltage) are independent channels, all flat in the topic, related only by `parent` links in the DTM.
 
 #### 8. Two-Layer Naming: Canonical (Stable) + Display (Customer-Owned)
 
