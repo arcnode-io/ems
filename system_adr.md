@@ -195,9 +195,9 @@ See [`ems/readme.md`](readme.md) for cloud (AWS) and on-prem (ISO) deployment di
   - Utilize Neo4j's cloud offerings (AuraDB) for managed deployments
 - **Graph Modeling Example**:
   ```cypher
-  CREATE (n:BESSGraph:Siemens {name: 'Energy Storage Unit', model: 'SIESTORAGE'})
-  CREATE (m:EnergyTrading:Siemens {name: 'Grid Connection Point', location: 'Munich Plant'})
-  CREATE (n)-[:CONNECTED_TO]->(m)
+  CREATE (b:BessModule:Tesla {name: 'External BESS', model: 'Megapack 3'})
+  CREATE (g:GridModule:Arcnode {name: 'Grid Container', site: 'brookside-dc-1'})
+  CREATE (b)-[:CONNECTED_TO]->(g)
   ```
 - **Implications**: Enables sophisticated graph-based analytics for energy management, supporting complex relationship tracking and AI-powered insights
 
