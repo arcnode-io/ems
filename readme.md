@@ -32,7 +32,6 @@ rectangle  "front of the meter" #line.dashed {
   collections dlr_sensors
   rectangle phase_shift_transformer
 }
-cloud ercot_api
 cloud third_party_apis
 rectangle cluster #line.dashed {
     rectangle industrial_gateway
@@ -49,8 +48,7 @@ rectangle cluster #line.dashed {
 }
 dlr_sensors -d-> line_controller: mqtt
 line_controller -u-> phase_shift_transformer: mqtt
-industrial_gateway -u-> mock_industrial_protocols: modbus / snmp / dnp3 / redfish / canbus
-ercot_api -r-> timeseries: http
+industrial_gateway -u---> mock_industrial_protocols: modbus\nsnmp\ndnp3\nredfish\ncanbus
 line_controller -d-> device_api: http
 industrial_gateway -d-> device_api: http
 ems_hmi -u-> device_api: http
