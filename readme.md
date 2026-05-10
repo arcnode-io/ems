@@ -135,17 +135,23 @@ operator_tooling -> device_api: POST/PUT/DELETE /devices/...
 note over ems_hmi: HMI is read-only;\nnot a CRUD client (ADR-002 §14)
 
 == shared regenerate + broadcast ==
-device_api -> document: regenerate AsyncAPI v3 spec (semver bump per §10)
+device_api -> document: regenerate AsyncAPI v3 spec\n(monotonic ver bump per §10)
 device_api -> broker: publish system/topology_changed { ts, version }
 broker -> industrial_gateway: forward
 broker -> line_controller: forward
 broker -> ems_hmi: forward
+
+== consumers fetch + reconcile ==
 industrial_gateway -> device_api: GET /asyncapi
+industrial_gateway -> device_api: GET /topology\n(protocol bindings)
+industrial_gateway -> industrial_gateway: diff + reconcile subs;\nsouth polls + north pubs
+
 line_controller -> device_api: GET /asyncapi
+line_controller -> line_controller: diff + reconcile sub list
+
 ems_hmi -> device_api: GET /asyncapi
-industrial_gateway -> industrial_gateway: diff + reconcile topic subs
-line_controller -> line_controller: diff + reconcile topic subs
-ems_hmi -> ems_hmi: diff + reconcile topic subs
+ems_hmi -> device_api: GET /topology\n(SLD + module browser)
+ems_hmi -> ems_hmi: diff + reconcile sub list + render
 ```
 
 Renames, display-name overrides, connection swaps, and parent-chain edits are dynamic per ADR-002 §14. Sizing changes that require a different module set still flow through the configurator → platform-api → edp-api → device-api bulk path.
