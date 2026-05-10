@@ -135,7 +135,7 @@ operator_tooling -> device_api: POST/PUT/DELETE /devices/...
 note over ems_hmi: HMI is read-only;\nnot a CRUD client (ADR-002 §14)
 
 == shared regenerate + broadcast ==
-device_api -> document: regenerate AsyncAPI v3 spec (monotonic ver bump per §10)
+device_api -> document: regenerate AsyncAPI v3 spec\n(monotonic ver bump per §10)
 device_api -> broker: publish system/topology_changed { ts, version }
 broker -> industrial_gateway: forward
 broker -> line_controller: forward
