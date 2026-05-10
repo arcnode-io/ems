@@ -113,47 +113,6 @@ llm -> analyst_api: synthesizes rag dbs and apis call
 analyst_api -> ems_hmi: renders chat
 ```
 
-## Topology Update Sequence
-
-Topology updates land via two paths: bulk replacement from `platform-api` (CFN update or new ISO) and per-device CRUD against `device-api`. Both paths regenerate the AsyncAPI v3 spec, bump semver per ADR-002 §10, and broadcast `system/topology_changed`. Per ADR-002 §14, device-level CRUD (add/remove/update) is supported dynamically; template *authoring* remains PR-gated to `edp-api/device_templates/`.
-
-```plantuml
-participant platform_api
-participant operator_tooling
-participant device_api
-database document
-queue broker
-participant industrial_gateway
-participant line_controller
-participant ems_hmi
-
-== bulk path ==
-platform_api -> device_api: POST /topology (new DTM)
-
-== dynamic CRUD path ==
-operator_tooling -> device_api: POST/PUT/DELETE /devices/...
-note over ems_hmi: HMI is read-only;\nnot a CRUD client (ADR-002 §14)
-
-== shared regenerate + broadcast ==
-device_api -> document: regenerate AsyncAPI v3 spec\n(monotonic ver bump per §10)
-device_api -> broker: publish system/topology_changed { ts, version }
-broker -> industrial_gateway: forward
-broker -> line_controller: forward
-broker -> ems_hmi: forward
-
-== consumers fetch + reconcile ==
-industrial_gateway -> device_api: GET /asyncapi
-industrial_gateway -> device_api: GET /topology
-line_controller -> device_api: GET /asyncapi
-ems_hmi -> device_api: GET /asyncapi
-ems_hmi -> device_api: GET /topology
-industrial_gateway -> industrial_gateway: diff + reconcile topic subs
-line_controller -> line_controller: diff + reconcile topic subs
-ems_hmi -> ems_hmi: diff + reconcile topic subs
-```
-
-Renames, display-name overrides, connection swaps, and parent-chain edits are dynamic per ADR-002 §14. Sizing changes that require a different module set still flow through the configurator → platform-api → edp-api → device-api bulk path.
-
 ## Cloud Deployment (AWS)
 
 ```plantuml
