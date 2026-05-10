@@ -170,6 +170,9 @@ See [`ems/readme.md`](readme.md) for cloud (AWS) and on-prem (ISO) deployment di
 - **Would lose**: Single-click deployment, air-gapped simplicity, zero-ops operator experience
 
 ###  Managed Postgres Service (like Neon) with TimeSeries Extension
+
+> **Note (2026-05-10):** [ADR-004](cloud_persistence_provisioning_adr.md) supersedes this rejection for the **document + vector slice** (Aurora serverless PG with `pgvector` ext, OSS plug-and-play driver). The rejection still holds for the **time-series slice** — Tiger Cloud is kept for TimescaleDB features.
+
 - **Rejected**: The educational value of learning production TimescaleDB feature is significant if you're building time-series expertise.
 - **Would simplify**: Initial setup for one service for document and time-series data, like neon. Lower entry cost (\$0 free tier vs $30/month
 - **Would lose**: Compression (5-10x storage savings), continuous aggregates, data tiering, optimized ingestion performance (50K+ vs 5K-15K device capacity), purpose-built time-series tooling and monitoring

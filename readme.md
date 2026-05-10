@@ -169,10 +169,9 @@ rectangle ecs_cluster #line.dashed {
 database s3
 
 rectangle managed_persistence #line.dashed {
-    cloud timescale_cloud 
-    cloud neon_vector
-    cloud neon_document
-    cloud neo4j_aura 
+    cloud timescale_cloud
+    database aurora_serverless
+    cloud neo4j_aura
 }
 
 rectangle third_party_apis #line.dashed {
