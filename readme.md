@@ -115,10 +115,11 @@ analyst_api -> ems_hmi: renders chat
 
 ## Topology Update Sequence
 
-Topology changes only via redeployment. The DTM is delivered by `platform-api` (CFN update or new ISO) and posted programmatically to `device-api`. The HMI has no topology editor.
+Topology updates land via two paths: bulk replacement from `platform-api` (CFN update or new ISO) and per-device CRUD against `device-api`. Both paths regenerate the AsyncAPI v3 spec, bump semver per ADR-002 §10, and broadcast `system/topology_changed`. Per ADR-002 §14, device-level CRUD (add/remove/update) is supported dynamically; template *authoring* remains PR-gated to `edp-api/device_templates/`.
 
 ```plantuml
 participant platform_api
+participant operator_tooling
 participant device_api
 database document
 queue broker
@@ -126,8 +127,15 @@ participant industrial_gateway
 participant line_controller
 participant ems_hmi
 
+== bulk path ==
 platform_api -> device_api: POST /topology (new DTM)
-device_api -> document: regenerate AsyncAPI v3 spec (semver bump)
+
+== dynamic CRUD path ==
+operator_tooling -> device_api: POST/PUT/DELETE /devices/...
+note over ems_hmi: HMI is read-only;\nnot a CRUD client (ADR-002 §14)
+
+== shared regenerate + broadcast ==
+device_api -> document: regenerate AsyncAPI v3 spec (semver bump per §10)
 device_api -> broker: publish system/topology_changed { ts, version }
 broker -> industrial_gateway: forward
 broker -> line_controller: forward
@@ -140,7 +148,7 @@ line_controller -> line_controller: diff + reconcile topic subs
 ems_hmi -> ems_hmi: diff + reconcile topic subs
 ```
 
-All topology changes — including renames, display-name overrides, and sizing changes — flow through the configurator → platform-api → edp-api → device-api path. No in-EMS topology editing.
+Renames, display-name overrides, connection swaps, and parent-chain edits are dynamic per ADR-002 §14. Sizing changes that require a different module set still flow through the configurator → platform-api → edp-api → device-api bulk path.
 
 ## Cloud Deployment (AWS)
 

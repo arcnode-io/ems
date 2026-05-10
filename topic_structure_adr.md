@@ -1,10 +1,21 @@
 # ADR-002: MQTT Topic Structure and Payload Conventions
 
-**Status:** Accepted
+**Status:** Accepted (revised 2026-05-09 — see §14)
 **Date:** 2026-04-25
 **Decision Makers:** Development Team
 **Consulted:** Energy Domain SMEs, Customer Operators
 **Informed:** EMS Subsystem Maintainers, Course Participants
+
+## Revision History
+- 2026-04-25 — Initial acceptance.
+- 2026-05-09 — §7 scope clarified; §14 added. Dynamic device-level CRUD via
+  `ems-device-api` is now in scope. Template *authoring* remains PR-gated and
+  out of runtime scope. Earlier "topology changes only via redeployment" stance
+  is superseded.
+- 2026-05-09 — §7 template versioning (`vN`) dropped for MVP. Templates are
+  PR-gated; git history is the version source. `vN` reserved for future
+  fleet-management work. §14 implications updated: HMI is read-only and not
+  a CRUD client.
 
 ## Context
 
@@ -144,16 +155,16 @@ The `EnumSample` channel schema in the generated AsyncAPI spec sets `value.enum`
 
 #### 7. Device Templates as Canonical Vocabulary Source
 
-**Decision**: Measurements, commands, units, and protocol bindings for each device type live in a versioned **device template** (e.g. `bess_module.v1`, `dlr_sensor.v1`). The DTM references templates by `${name}.${version}` slug; it does not redefine measurements per deployment.
+**Decision**: Measurements, commands, units, and protocol bindings for each device type live in a **device template** (e.g. `bess_module`, `dlr_sensor`). The DTM references templates by bare slug; it does not redefine measurements per deployment. Template authoring is PR-gated; git history is the version source. A `vN` suffix is reserved for future fleet-management work where multiple firmware revisions of the same model are in flight simultaneously — out of scope for MVP.
 
 We use *template* rather than *class* deliberately — "class" is OOP jargon that doesn't translate to industrial operators or integrators, while *template* is the standard SCADA/HMI term for "a definition you instantiate." OPC UA's *ObjectType*, IEC 61850's *Logical Node Type*, BACnet's *ObjectType*, and Sparkplug's *Device Definition* all model the same concept; we picked the term that reads cleanly in operator-facing UI, ADR text, and code without overloading either *type* or *profile* (the latter collides with IEC 61850 conformance profiles).
 
-**Positioning — ARCNODE owns the inside of every container we ship and the integration of every BESS we support.** The three module types are `compute_module` and `grid_module` (arcnode-fabricated containers — GPU servers, NVLink switches, DLC pumps + plate heat exchangers; AC switchgear, transformer, PCS, metering relays) and `bess_module` (BYO — Tesla Megapack, Tesla Megablock, CATL EnerOne). Templates are not vendor-agnostic placeholders. For arcnode-fab containers, templates encode our hardware design end-to-end. For BESS modules, templates encode the supported vendor's protocol surface and register map, authored by the ARCNODE team. Templates are first-class, opinionated definitions, versioned and PR-gated like source code. Software architecture leans on this — codegen targets are specific (we know exactly what a `bess_module.v1` exposes), HMI views are designed against known shapes (not generic "render whatever the device says"), and template versioning is rigorous (every minor bump = a real hardware change). User-defined templates and runtime extensibility are explicitly **out of scope** for MVP — extensibility lives at the per-device `extra_measurements:` escape hatch in the DTM, not at template-authoring time.
+**Positioning — ARCNODE owns the inside of every container we ship and the integration of every BESS we support.** The three module types are `compute_module` and `grid_module` (arcnode-fabricated containers — GPU servers, NVLink switches, DLC pumps + plate heat exchangers; AC switchgear, transformer, PCS, metering relays) and `bess_module` (BYO — Tesla Megapack, Tesla Megablock, CATL EnerOne). Templates are not vendor-agnostic placeholders. For arcnode-fab containers, templates encode our hardware design end-to-end. For BESS modules, templates encode the supported vendor's protocol surface and register map, authored by the ARCNODE team. Templates are first-class, opinionated definitions, PR-gated like source code. Software architecture leans on this — codegen targets are specific (we know exactly what a `bess_module` exposes), HMI views are designed against known shapes (not generic "render whatever the device says"), and template authoring discipline is rigorous (every PR is a real hardware decision). User-defined *template authoring* is explicitly **out of scope** for MVP — new templates land via PR to `edp-api/device_templates/`, not at runtime. Per-template extensibility within an existing template lives at the per-device `extra_measurements:` escape hatch in the DTM. *Device-level* dynamic CRUD — instantiating an existing template at a new device-id, removing a device, updating a device's display name or connection — is in scope and lives in `ems-device-api`; see §14.
 
 **Rationale**:
 - Bikeshedding ("`voltage_dc` here, `dc_voltage` there") resolved once at template-design time
 - Aligns with the modular hardware product surface — three module-level templates as roots (`compute_module`, `grid_module`, `bess_module`), equipment templates beneath, all curated to real datasheets
-- Template versioning is independent: `bess_module.v1` → `bess_module.v2` is a measurable hardware upgrade with its own semver
+- Git history is the version source for MVP; template-file PRs carry the audit trail. Explicit `vN` adds discipline cost without buying anything until multiple firmware revisions of the same model are in flight simultaneously.
 
 **Implications**:
 - Templates are the single PR-gated vocabulary surface. Canonical home is **`edp-api/device_templates/`** — `edp-api` is both author and sole runtime reader, no separate distribution repo. Promote to a dedicated repo when template count exceeds ~12 or external integrators need consumption-only access.
@@ -166,12 +177,12 @@ We use *template* rather than *class* deliberately — "class" is OOP jargon tha
 Example tree (BESS-shaped, identical pattern for compute and grid):
 
 ```
-bess_module_01            template: bess_module.v1, parent: null
-├── bess_rack_01          template: bess_rack.v1,   parent: bess_module_01
-│   ├── bess_bms_01       template: bess_bms.v1,    parent: bess_rack_01
-│   ├── bess_inverter_01  template: bess_inverter.v1, parent: bess_rack_01
-│   └── bess_cell_001..N  template: bess_cell.v1,   parent: bess_rack_01
-├── bess_rack_02
+bess_module_1             template: bess_module,   parent: null
+├── bess_rack_1           template: bess_rack,     parent: bess_module_1
+│   ├── bess_bms_1        template: bess_bms,      parent: bess_rack_1
+│   ├── bess_inverter_1   template: bess_inverter, parent: bess_rack_1
+│   └── bess_cell_1..N    template: bess_cell,     parent: bess_rack_1
+├── bess_rack_2
 └── ...
 ```
 
@@ -236,6 +247,35 @@ Consumers that are not devices — `ems-hmi`, `ems-analyst-server`, `platform-ap
 
 **Implications**:
 - A compromised device could publish fake telemetry from another device. Acceptable for MVP private-broker deployments. Not acceptable once a multi-tenant or partner-integration scenario emerges — at which point ADR-003 supersedes section 13.
+
+#### 14. Dynamic Device CRUD via `ems-device-api`
+
+**Decision**: `ems-device-api` exposes runtime device CRUD endpoints. Adding, removing, or updating a device — instantiating an existing template at a new `device_id`, swapping a `connection`, retitling a `display_name`, or deleting a device — is a device-api operation, not a redeployment. Each successful mutation regenerates the AsyncAPI v3 spec, bumps semver per §10, persists the new spec, and publishes `system/topology_changed { ts, version }`. Bulk delivery of a fresh DTM via `POST /topology` (platform-api on first install or major upgrade) remains supported and is the same regenerate-and-broadcast operation applied to a wholesale replacement.
+
+**Rationale**:
+- Operators commission, repair, and replace equipment at runtime. Forcing every change through a redeploy cycle adds operational friction without a safety benefit, since the spec-regen + `topology_changed` mechanism (§10) already handles consumer reconciliation correctly.
+- Template *authoring* is the part that needs PR-gating (§7) — adding a new measurement vocabulary item is an engineering change. Template *instantiation* (using a template that already exists) is a deployment-state change and belongs in the runtime surface.
+- The two operations (POST /topology blob and per-device PUT/DELETE/POST) collapse to the same downstream effect: persist the new graph, regenerate the spec, broadcast. Symmetry simplifies consumers — they only react to `topology_changed`.
+
+**Scope of dynamic operations**:
+
+| Operation | Allowed dynamically | Notes |
+|---|---|---|
+| Add device using existing template | yes | Must reference a template already present in `templates_used` or in the bundled template set |
+| Remove device | yes | Cascades to children when the device is a parent (§7); refuses if the device is referenced by a `bus.members[].device_id` until the bus is updated |
+| Update `display_name` | yes | Patch-level spec bump (§10) |
+| Update `connection` (host/port/unit_id) | yes | Patch-level — bindings live in `x-source` per §4; spec regenerates with new metadata |
+| Update `parent` (re-parent) | yes | Validates parent-chain has no cycles |
+| Add/remove `extra_measurements` on a device | yes | Minor spec bump (additive measurement on that device's channels) |
+| Introduce a new template at runtime | **no** | Template authoring is PR-gated (§7); runtime CRUD references templates by bare slug and rejects unknown refs |
+| Modify a template (add a measurement, change unit) | **no** | Same — template edits land via PR to `edp-api/device_templates/` |
+
+**Implications**:
+- `ems-device-api` owns referential integrity at runtime: every CRUD validates template ref, parent chain (acyclic), and `bus.members[]` consistency.
+- AsyncAPI semver discipline (§10) applies per CRUD operation. A single PUT can be patch (rename) or minor (add device); the regen pipeline computes the bump from the diff.
+- `system/topology_changed` is fired exactly once per successful mutation; transactional CRUD groups multiple changes into one broadcast.
+- **`ems-hmi` is not a CRUD client.** It remains read-only against `/topology` and `/asyncapi` for the module browser, SLD rendering, and live telemetry. It does not call POST/PUT/DELETE on devices. Dynamic CRUD endpoints are invoked by `platform-api` (bulk delivery), commissioning workflows, and integrator/operator tooling outside the HMI surface. Authorization model belongs in a future ADR-004.
+- Persistence layer must retain history: every CRUD produces a new versioned topology row so the AsyncAPI version monotonically increases and audit reconstruction is possible.
 
 ## Consequences
 
