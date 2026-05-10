@@ -41,7 +41,7 @@ serverless PG; provision Tiger Cloud and Neo4j Aura via inline CFN
 custom-resource Lambdas using vendor API tokens pasted as CFN parameters.
 Operator does one round of vendor signup (or two AWS Marketplace 1-clicks)
 and one CFN launch. Everything else flows through Secrets Manager into
-ECS task definitions.
+the EC2 instance's UserData and the docker-compose stack it starts.
 
 The existing app code (`ems-device-api`, `ems-analyst-*`,
 `ems-industrial-gateway`, `ems-line-controller`, `ems-hmi`) targets
@@ -51,15 +51,18 @@ this is purely a deployment-layer redesign.
 ## Goals
 
 1. A single per-order CFN yaml produces a fully provisioned cloud EMS
-   stack: VPC, ECS cluster, Aurora serverless PG, Tiger Cloud instance,
-   Neo4j Aura instance, S3 buckets, Secrets Manager entries, ECS services.
+   stack: VPC, EC2 instance, Aurora serverless PG, Tiger Cloud instance,
+   Neo4j Aura instance, Secrets Manager entries, docker-compose stack
+   running the EMS services.
 2. Operator inputs to the CFN are limited to:
    - `DeploymentUuid` and `DtmS3Url` (baked in by `platform-api` per ADR-001 §5)
    - `TigerCloudApiKey` and `TigerCloudProjectId` (operator-pasted)
    - `Neo4jAuraClientId` and `Neo4jAuraClientSecret` (operator-pasted)
-3. Connection strings flow CFN custom resource → Secrets Manager → ECS
-   task definition `secrets:` block. Containers receive them as env vars at
-   start. No connection strings appear in the CFN template literal text.
+3. Connection strings flow CFN custom resource → Secrets Manager →
+   UserData → `/opt/arcnode/<name>.url` files → docker-compose
+   `env_file:` directives → containers receive them as standard env
+   vars at start. No connection strings appear in the CFN template
+   literal text and no operator paste of conn strings is required.
 4. ISO and dev-compose paths remain unchanged. Symmetry holds at the
    protocol layer (Postgres + Bolt + S3).
 5. Zero direct vendor account exposure to the operator beyond the
@@ -134,51 +137,71 @@ the SQL once at stack-create time.
        ParameterKey=Neo4jAuraClientSecret,ParameterValue=$AURA_SECRET
    ```
 
-5. **Done.** CFN provisions Aurora natively, calls Tiger and Aura APIs via
-   the inline Lambdas, writes all conn strings to Secrets Manager,
-   stands up ECS services. Total CFN runtime: ~10-15 minutes (Aurora is
-   the slow leg; SaaS-API calls are seconds).
+5. **Done.** CFN provisions Aurora natively, calls Tiger and Aura APIs
+   via the inline Lambdas, writes all conn strings to Secrets Manager,
+   then launches the EC2 instance whose UserData fetches the secrets
+   and starts the docker-compose stack. Total CFN runtime: ~10-15 minutes
+   (Aurora is the slow leg; vendor API calls are seconds).
 
 The operator never copies a connection string. The one place vendor
 credentials are needed is the four CFN parameter pastes at step 4 above.
 
 ### CFN template structure
 
+The per-order CFN template is composed by `platform-api`'s
+`src/cfn/cfn_service.py` (NestJS-style modules — `_module.py` for DI,
+`_service.py` for orchestration, `_resources.py` for pure CFN data
+builders). Today's template provisions a single EC2 instance in a
+public subnet that runs `docker-compose` from UserData, with three
+operator-pasted connection strings (`NeonConnectionString`,
+`AuraConnectionString`, `TimeseriesConnectionString`) wired through
+`Fn::Sub` into the UserData script. This spec keeps the EC2 +
+docker-compose execution model and replaces the manual-paste flow.
+
 Sections, in order they appear in the per-order yaml:
 
-1. **Parameters** — `DeploymentUuid`, `DtmS3Url`, `TigerCloudApiKey`,
-   `TigerCloudProjectId`, `Neo4jAuraClientId`, `Neo4jAuraClientSecret`.
-   Vendor params marked `NoEcho: true`.
-2. **Networking** — `AWS::EC2::VPC`, two private subnets, security
-   groups, NAT gateway. Standard ECS Fargate setup.
-3. **Aurora serverless PG** — `AWS::RDS::DBCluster` (engine
+1. **Parameters** — `TigerCloudApiKey`, `TigerCloudProjectId`,
+   `Neo4jAuraClientId`, `Neo4jAuraClientSecret`. The three existing
+   `*ConnectionString` parameters are removed — operators no longer
+   paste raw conn strings. Vendor token params marked `NoEcho: true`,
+   `MinLength: 1`, no defaults (CFN refuses to deploy if missing).
+   `DeploymentUuid` and `DtmS3Url` continue to be baked into the
+   template literal by `platform-api` per ADR-001 §5 (not CFN
+   parameters).
+2. **Networking** — existing minimal VPC + single public subnet (per
+   `network_resources()` in `cfn_resources.py`). Unchanged.
+3. **IAM** — existing instance role + instance profile (per
+   `iam_resources()`). Extended with `secretsmanager:GetSecretValue`
+   on `arn:aws:secretsmanager:*:*:secret:ems/${DeploymentUuid}/*` so
+   UserData can fetch the Lambda-written secrets at boot.
+4. **Aurora serverless PG** — `AWS::RDS::DBCluster` (engine
    `aurora-postgresql`, engine version `16.3` or later, serverless
    scaling config with `MinCapacity: 0`, `SecondsUntilAutoPause: 300`),
    `AWS::RDS::DBInstance` (instance class `db.serverless`),
    `AWS::SecretsManager::Secret` for master credentials with managed
    rotation enabled.
-4. **Aurora bootstrap Lambda** — inline custom resource that creates the
-   `ems_document` and `ems_vector` databases and installs the `vector`
-   extension. Runs once at stack-create. Unlike the vendor Lambdas in
-   §5–§6, this Lambda needs `VpcConfig` (private subnets + security group
-   allowing outbound to the Aurora cluster) because it speaks Postgres
-   to a private RDS endpoint. The vendor Lambdas hit public REST APIs
-   and run outside the VPC.
-5. **Tiger Cloud Lambda + custom resource** — inline Python Lambda
+5. **Aurora bootstrap Lambda + custom resource** — inline Python Lambda
+   that creates the `ems_document` and `ems_vector` databases, installs
+   the `vector` extension on `ems_vector`, creates a least-privilege
+   app user per database, and writes the two app-user connection strings
+   to Secrets Manager. Runs once at stack-create. Unlike the vendor
+   Lambdas in §6–§7, this Lambda needs `VpcConfig` (subnet + security
+   group allowing outbound to the Aurora cluster) because it speaks
+   Postgres to the private RDS endpoint. The vendor Lambdas hit public
+   REST APIs and run outside the VPC.
+6. **Tiger Cloud Lambda + custom resource** — inline Python Lambda
    (described below) provisions a Tiger service via REST API, polls until
-   ready, writes `TigerCloudConnectionString` to Secrets Manager.
-6. **Neo4j Aura Lambda + custom resource** — same pattern, against the
-   Aura API. Writes `Neo4jAuraUri`, `Neo4jAuraUsername`, `Neo4jAuraPassword`
-   to Secrets Manager.
-7. **S3 buckets** — DTM artifact bucket per ADR-003 (or operator-supplied
-   bucket reference) + ML/MLflow buckets per readme.md cloud diagram.
-8. **ECS cluster + services** — task definitions for `ems-device-api`,
-   `ems-industrial-gateway`, `ems-line-controller`, `ems-hmi`,
-   `ems-analyst-server`, `ems-analyst-agent`, `ems-analyst-model`,
-   `ems-mlflow`, `emqx`, `prometheus`, `grafana`. Each task definition's
-   `secrets:` block references the Secrets Manager entries by ARN.
-9. **Outputs** — public load-balancer URL for `ems-hmi`, deployment
-   summary for the operator.
+   ready, writes the Tiger conn string to Secrets Manager.
+7. **Neo4j Aura Lambda + custom resource** — same pattern, against the
+   Aura API. Writes Aura URI + username + password to Secrets Manager.
+8. **S3 + EC2** — existing single EC2 instance (`AWS::EC2::Instance`,
+   `t3.medium`, AL2023 AMI), with UserData rewritten to fetch the four
+   secrets from Secrets Manager via the AWS CLI (already in AL2023) and
+   write them to `/opt/arcnode/{aurora-document,aurora-vector,tiger,aura}.url`
+   for the docker-compose stack to source. UserData depends on all four
+   custom resources via `DependsOn`.
+9. **Outputs** — existing `PublicIp` (HMI URL), `DeploymentUuid`,
+   `DtmUrl`, `EmsMode`. No new outputs required.
 
 ### Inline Lambda design
 
@@ -235,21 +258,26 @@ template limit comfortably, alongside the rest of the stack.
 All persistence credentials live under
 `ems/${DeploymentUuid}/persistence/`:
 
-| Secret name | Source | Consumers |
+| Secret name | Source | Consumers (docker-compose service) |
 |---|---|---|
-| `ems/${id}/persistence/aurora-master` | Aurora-managed rotation | Aurora bootstrap Lambda only |
-| `ems/${id}/persistence/aurora-document` | Aurora bootstrap Lambda writes app-user creds | `device-api` |
-| `ems/${id}/persistence/aurora-vector` | Same | `domain-mcp-server` |
-| `ems/${id}/persistence/tiger` | Tiger Lambda writes `{host, port, user, password, database}` | `analyst-server`, `device-api` (timescale writes) |
-| `ems/${id}/persistence/neo4j-aura` | Aura Lambda writes `{uri, username, password}` | `domain-mcp-server` |
+| `ems/${id}/persistence/aurora-master` | Aurora-managed rotation | Aurora bootstrap Lambda only (cluster admin) |
+| `ems/${id}/persistence/aurora-document` | Aurora bootstrap Lambda writes app-user creds | `ems-device-api` |
+| `ems/${id}/persistence/aurora-vector` | Same | `ems-domain-mcp-server` |
+| `ems/${id}/persistence/tiger` | Tiger Lambda writes a `postgres://` conn string | `ems-analyst-server`, `ems-device-api` (timescale writes) |
+| `ems/${id}/persistence/neo4j-aura` | Aura Lambda writes `{uri, username, password}` | `ems-domain-mcp-server` |
 
-ECS task definitions reference each secret by ARN in the `secrets:`
-block; Fargate injects them as env vars at task start. The env var names
-each service expects are defined per-service in its `cfg.yml` /
-`template-secrets.env` (per ADR-001 conventions); the CFN task definition
-maps Secrets Manager entries to whatever names the service expects. The
-goal is to preserve the same env vars across cloud, ISO, and dev — exact
-names are confirmed per service when wiring up its task definition.
+UserData on the EC2 instance fetches each secret at boot via
+`aws secretsmanager get-secret-value --secret-id ems/${id}/persistence/<name>`
+(IAM authorized via the existing instance profile, extended per §3
+above) and writes the value to `/opt/arcnode/<name>.url`. The
+docker-compose stack sources these files at service-start via
+`env_file:` directives, so each container receives a standard env var
+(e.g., `DATABASE_URL=postgres://...`). The exact env var name per
+service is defined in each service's `cfg.yml` / `template-secrets.env`
+per ADR-001 conventions; the UserData → file → docker-compose env_file
+chain preserves the names the services already expect from
+ISO + dev-compose contexts. Cloud, ISO, and dev all read the same env
+vars; the only difference is where the values come from.
 
 ### Symmetry with ISO and dev contexts
 
@@ -305,7 +333,7 @@ for TS than it does for document.
 | Operator pastes wrong vendor API token | Vendor API returns 4xx → Lambda sends FAILED → CFN ROLLBACK; previously created Aurora cluster is deleted by CFN | Surfaces config error at stack-create; operator fixes token and retries |
 | Vendor API outage during Create | Lambda retries with backoff; on exhaustion FAILED → ROLLBACK | Operator retries when vendor recovers |
 | Aurora bootstrap SQL fails | Custom resource sends FAILED → ROLLBACK | Indicates Aurora was provisioned but extension/database creation hit a real error; operator reads CloudWatch log |
-| ECS task fails to read secret | Task definition `secrets:` block enforces this; task fails to start; ECS service event surfaces it | Standard ECS failure mode; not specific to this design |
+| EC2 UserData fails to fetch secret | UserData script `set -euo pipefail` causes nonzero exit; CFN signal handler (or operator SSM check on `/opt/arcnode/userdata.done`) surfaces it | Standard EC2 + UserData failure mode; existing pattern |
 | Stack delete leaves orphaned vendor instances | Lambda Delete handler deletes vendor instance + Secrets Manager entry; if Lambda fails, vendor instance is orphaned (still billing) | Documented; operator must manually delete via vendor console as fallback |
 
 CFN's stack-rollback semantics handle the happy negative path
@@ -324,21 +352,22 @@ workload. Treat as order-of-magnitude only.
 | Aurora serverless PG (auto-paused, 0 ACU) | ~$0 (storage only, ~$0.10/GB/mo) |
 | Tiger Cloud (PAYG smallest tier) | ~$30/mo |
 | Neo4j Aura (PAYG smallest tier) | ~$65/mo |
-| ECS Fargate (services scaled down) | ~$5-10/mo |
+| EC2 `t3.medium` (always-on per existing CFN) | ~$30/mo |
 | S3 + data transfer | ~$1/mo |
-| NAT gateway (always-on) | ~$33/mo |
-| **Total idle** | **~$135-145/mo** |
+| **Total idle** | **~$125-130/mo** |
 
 Compares favorably to today's all-managed setup (Tiger ~$30 + Neon
-document ~$20 + Neon vector ~$20 + Aura ~$65 + ECS/S3/NAT ~$45 ≈
-$180/mo idle). Active workload pricing is dominated by Aurora ACU
-consumption + ECS task hours; no significant change.
+document ~$20 + Neon vector ~$20 + Aura ~$65 + EC2 ~$30 ≈ $165/mo idle).
+Active workload pricing is dominated by Aurora ACU consumption + EC2
+hours; no significant change.
 
-NAT gateway is the dominant always-on cost. A future optimization
-(out of scope for MVP) is replacing it with VPC endpoints for the
-specific AWS services the ECS tasks need (S3, Secrets Manager,
-CloudWatch Logs) plus a NAT instance for vendor-API egress, which can
-shave ~$25/mo off the idle floor.
+The existing CFN uses a single public-subnet EC2 instance, so there is
+no NAT gateway in the cost floor (an Internet Gateway with a public IP
+on the instance handles egress). Aurora and the vendor APIs are reached
+over the public internet from the EC2 instance; the Aurora cluster sits
+in the same public subnet for simplicity at MVP. Locking Aurora into
+private subnets is a future hardening step (introduces NAT, changes
+cost, blocked on the broader VPC redesign).
 
 ### Future work
 
@@ -413,11 +442,16 @@ requires per-vendor implementation (see Future work).
 ### Why Secrets Manager instead of CFN-template-literal env vars
 
 Connection strings contain database passwords. Embedding them as
-literal strings in the CFN template (or as plaintext ECS task definition
-env vars) puts them in CloudTrail, CFN drift detection diffs, and any
-log of the rendered template. Secrets Manager is the standard AWS pattern
-for credential injection into ECS tasks; it's also what
-`AWS::RDS::DBCluster`'s managed rotation expects.
+literal strings in the CFN template (or as plaintext UserData via
+`Fn::Sub`) puts them in CloudTrail, CFN drift detection diffs, and any
+log of the rendered template. The existing CFN already keeps the three
+operator-pasted conn strings out of the template literal text by using
+`NoEcho: true` parameters and `Fn::Sub` at render time, but the
+Lambda-provisioned conn strings are generated *during* stack-create
+and have nowhere to live except Secrets Manager. Secrets Manager is
+also what `AWS::RDS::DBCluster`'s managed rotation expects, and the
+EC2 instance role can be granted scoped read access to a single
+`ems/${DeploymentUuid}/*` secret prefix.
 
 ## Alternatives Considered
 
