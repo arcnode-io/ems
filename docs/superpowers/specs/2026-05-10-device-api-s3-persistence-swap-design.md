@@ -1,201 +1,163 @@
 # Device-API Persistence Swap (Postgres → S3) — Design
 
-**Goal:** Swap `ems-device-api`'s persistence backend from Postgres + TypeORM to S3 (already used for Day-1 boot per ADR-003). Monotonic version counter moves into the DTM JSON itself.
+**Goal:** Swap `ems-device-api`'s persistence backend from Postgres + TypeORM to S3. Monotonic version counter moves into the DTM JSON itself.
 
-**Terminology note:** Device-api remains a *stateful* service — in-memory DTM cache, versioned topology. What changes is *where* persistence lives: S3 instead of Postgres. This is a storage backend swap, not a statelessness conversion.
+**Stays stateful.** Device-api still has an in-memory DTM cache and serves a versioned topology. Only the persistence backend changes.
 
-**Why this exists:** Audit history was silently introduced in PRs 1–5 via the `topology` table's row-per-save pattern. That unapproved scope justified a Postgres dependency, which justified migration plumbing, repository mocks, and a testcontainer that didn't need to exist. S3-backed persistence aligns with what device-api actually is: a transform/cache layer over an S3 artifact owned by `edp-api`.
+**Why:** Audit history was silently introduced in PRs 1–5 via the `topology` table's row-per-save pattern — unapproved scope that justified Postgres, migrations, repository mocks, and a testcontainer. Removing it eliminates the entire database layer.
 
-**Order of operations rationale:** Refactor lands BEFORE any consumer (gateway stub, line-controller, hmi) is built against the current shape. Architecture cleanup compounds when consumers couple to a wrong shape.
-
-**Out of scope (do NOT touch):**
-- `edp-api` — someone else is working on it. Tests assume DTM in S3 already carries a `version` field (default `"1.0.0"` if absent for bootstrap).
-- Per-device CRUD endpoints (deferred per existing memory; bulk POST /topology only)
-- Multi-replica device-api (single replica in v1; multi-replica cache invalidation deferred)
-- Audit history of any kind — explicit non-goal
+**Out of scope:**
+- `edp-api` — untouched; tests assume DTM in S3 carries a `version` field (default `"1.0.0"` if absent)
+- Per-device CRUD endpoints — deferred
+- Multi-replica device-api — single replica in v1
+- Audit history — explicit non-goal
+- Dynamic schema generation — Zod schemas in `src/topology/dtm.schema.ts` are baked at build time and evolve with arcnode product releases, not at runtime
 
 ---
 
 ## Architecture
 
 ```
-                      S3 (canonical store)
-                      └─ dtm.json (contains `version` field)
-                          ▲
-                  edp-api │  (writes once at build time — ISO/CFN. No runtime connection.)
-                          │
-                          ▼
-                     device-api (stateful service, S3-backed persistence)
-                       ├─ in-memory cache of current DTM (refreshed on boot)
-                       ├─ POST /topology → fetch S3 → bump version → PUT S3 → broadcast
-                       ├─ GET /topology → serve from cache
-                       ├─ GET /asyncapi → derive from cached DTM
-                       └─ MQTT pub system/topology_changed { ts, version } on save
-                          │
-                          ▼
-                      gateway + line-controller + hmi (consumers)
+                S3 (canonical store)
+                └─ dtm.json (contains `version` field)
+                    ▲
+            edp-api │  (writes once at build time — ISO/CFN; no runtime connection)
+                    │
+                    ▼
+               device-api (stateful, S3-backed)
+                 ├─ in-memory cache of current DTM
+                 ├─ POST /topology → fetch + bump + PUT + cache + broadcast
+                 ├─ GET /topology  → cache
+                 ├─ GET /asyncapi  → derive from cache
+                 └─ MQTT pub system/topology_changed { ts, version }
+                    │
+                    ▼
+              gateway + line-controller + hmi
 ```
 
-**Sources of truth:**
-- DTM content: S3 (single object per deployment)
-- Version counter: inside the DTM JSON's `version` field
-- AsyncAPI spec: pure function of DTM, not persisted
-
-**Writer model:**
-- **Build time:** `edp-api` writes initial DTM (with `version: "1.0.0"`) to S3 via ISO bake or CloudFormation init. No runtime connection between edp-api and device-api.
-- **Runtime:** `device-api` is the sole writer. Operator POSTs /topology → device-api fetches current, bumps patch, PUTs back. Re-deployment cycle = new ISO/CFN with new artifact; runtime mutations correctly lost (intent of re-deploy).
+**Writer model:** edp-api writes once at build time. At runtime, device-api is the **sole writer** of the S3 object. Cache is authoritative between writes by construction.
 
 ---
 
 ## State elimination
 
-**What dies:**
-
 | File / concern | Action |
 |---|---|
-| `src/topology/topology.entity.ts` | Delete entirely |
+| `src/topology/topology.entity.ts` | Delete |
 | `TypeOrmModule.forFeature([Topology])` in `topology.module.ts` | Remove |
 | `TypeOrmModule.forRoot({...})` in `app.module.ts` | Remove |
-| `synchronize: true` schema setup | Remove |
-| `@nestjs/typeorm`, `typeorm`, `pg` packages | Drop from `package.json` |
+| `synchronize: true` | Remove |
+| `@nestjs/typeorm`, `typeorm`, `pg` in `package.json` | Drop |
 | Postgres testcontainer in `tests/fixtures/containers.ts` | Drop |
-| Postgres-related cfg keys (`postgresHost`, `postgresPort`) | Drop from `cfg.yml` |
-| `POSTGRES_PASSWORD` env var | Drop from `template-secrets.env` |
+| `postgresHost` / `postgresPort` in `cfg.yml` | Drop |
+| `POSTGRES_PASSWORD` in `template-secrets.env` | Drop |
 | `Repository<Topology>` mocks across `*.test.ts` | Replace with S3 client mocks |
-| Save history (row-per-save) | Unapproved scope — gone |
+| Audit history (row-per-save) | Gone |
 
-**What stays:**
-
-- `src/topology/topology.service.ts` — external signature unchanged; internals rewritten to use S3 client + cache
-- `src/asyncapi/` — pure function of DTM; no change
-- Day-1 S3 boot flow (PR 4) — now refreshes cache instead of seeding DB
-- `src/mqtt/` — MQTT broadcast on save (PR 6); unchanged
-- Template catalog validation
-- All HTTP endpoints (external contract unchanged)
-- LocalStack testcontainer (already in use for PR 4)
+**What stays:** `topology.service.ts` (signature unchanged, internals rewritten), `src/asyncapi/`, Day-1 boot flow, MQTT broadcast, template-catalog validation, all HTTP endpoint signatures, LocalStack testcontainer.
 
 ---
 
-## Save flow
-
-### POST /topology behavior
+## Save flow (POST /topology)
 
 ```
 TopologyService.save(dtm):
   1. validateAgainstCatalog(dtm)
-  2. headObject(s3Key) → { etag: e1, currentDtm }
-     If S3 returns NoSuchKey → bootstrap path: currentDtm = null, etag = null
+  2. headObject(s3Key)
+       → { etag: e1, currentDtm } on hit
+       → NoSuchKey → bootstrap: currentDtm = null, etag = null
   3. priorVersion = currentDtm?.version ?? "1.0.0"
-  4. nextVersion = nextMonotonicVersion(priorVersion)   // existing helper
+  4. nextVersion  = nextMonotonicVersion(priorVersion)   // existing helper
   5. newDtm = { ...incomingDtm, version: nextVersion }
-  6. putObject(s3Key, newDtm, IfMatch: e1) on update path,
-     or putObject(s3Key, newDtm) on bootstrap path (no IfMatch)
-       → 200 on success
-       → 412 Precondition Failed → 409 Conflict to client
+  6. putObject(s3Key, newDtm,
+       IfMatch: e1  if not bootstrap,
+       no IfMatch   if bootstrap)
   7. cache.set(newDtm)
   8. mqttClient.publishTopologyChanged(nextVersion)
   9. return newDtm
 ```
 
-### Concurrency model
+**Failure responses:**
 
-S3 optimistic locking via ETag + `If-Match` header. v1 single-replica device-api with edp-api as build-time-only writer = effectively zero contention. ETag is cheap insurance for:
-- Two simultaneous operator POSTs (extremely rare; surfaced as 409 → client retries)
-- Future multi-replica scenarios (not v1)
+| Cause | HTTP |
+|---|---|
+| Catalog validation fails | 400 |
+| S3 returns 412 (concurrent writer) | 409 Conflict |
+| S3 unreachable | 503 (fail loud, no in-process retry) |
+| MQTT publish fails | log warning, continue (producer fails loud, consumer owns resilience) |
 
-### Failure modes
-
-- S3 unreachable → 503 Service Unavailable. Fail loud, let the runtime stack trace.
-- 412 Precondition Failed → 409 Conflict to client.
-- Catalog validation fails → 400 Bad Request (unchanged).
-- MQTT broadcast fails → log warning + continue (per saved feedback: producer publishes don't retry, consumer owns resilience).
-
-**No defensive scope:** no save history, no rollback path, no retry loops on the S3 PUT.
+No save history, no rollback, no retry loops.
 
 ---
 
 ## Boot + read flow
 
-### Boot
+**Boot** (extends existing PR 4 / ADR-003 behavior):
 
 ```
 on bootstrap:
-  1. dtm = fetchDtmFromS3()    # may throw if S3 unreachable or NoSuchKey
-  2. if dtm.version is missing → default to "1.0.0"
+  1. dtm = fetchDtmFromS3()                   // may throw → fatal exit, orchestrator restarts
+  2. if dtm.version is missing → "1.0.0"
   3. cache.set(dtm)
   4. HTTP server starts accepting traffic
 ```
 
-If S3 unreachable at boot → fail fast (existing PR 4 / ADR-003 behavior).
-
-### Read endpoints
+**Reads:**
 
 ```
-GET /topology:
-  return cache.get()
-
-GET /asyncapi:
-  dtm = cache.get()
-  return generateAsyncApiSpec(dtm)    # info.version = dtm.version
+GET /topology  → cache.get()
+GET /asyncapi  → generateAsyncApiSpec(cache.get())   // info.version = dtm.version
 ```
 
-### Why no S3 refetch on every read
+Cache is coherent with S3 by construction (single writer = device-api itself, updates cache atomically with PUT). No re-fetch on read.
 
-- Cache invalidation handled by write path (`save()` updates cache atomically with successful PUT)
-- No external writers at runtime (edp-api is build-time only)
-- v1 single-replica → cache always coherent with S3
+**Runtime S3 outage:**
 
-**Future-proofing (NOT v1):** multi-replica would refetch on receipt of `system/topology_changed` beacon from sibling replicas. Cheap to add later.
+| Scenario | GET /topology | GET /asyncapi | POST /topology |
+|---|---|---|---|
+| S3 unreachable, DTM still in S3 | ✅ cache | ✅ cache | ❌ 503 |
+| Pod restart while S3 unreachable | ❌ boot fatal → restart loop | same | same |
+
+Canonical behavior in [ADR-003 failure-modes table](../../../boot_strategy_adr.md).
 
 ---
 
 ## Test setup
 
-### Device-api repo
+**Device-api repo:**
 
-| Container | Change |
+| Container | Action |
 |---|---|
-| Postgres testcontainer | **Drop** |
-| LocalStack | Stays (already in use from PR 4) |
-| emqx | Stays (PR 6 broadcast tests) |
+| Postgres | Drop |
+| LocalStack | Keep (already from PR 4) |
+| emqx | Keep (PR 6) |
 
-Tests rewritten:
-- **Unit tests** (`topology.service.test.ts`): replace `Repository<Topology>` mocks with S3 client mocks (`getObject`, `putObject`, `headObject`). AAA pattern preserved.
-- **Integration tests** (`tests/topology.test.ts`): bootstrap device-api against LocalStack + emqx. POST a DTM, assert it lands in S3 with bumped version, assert MQTT beacon fires.
-- **New integration test**: ETag concurrency — two parallel POSTs, one wins, one gets 409.
-- **Existing Day-1 boot test**: unchanged semantics; behavior matrix still applies (`bootDtmS3Url` set + empty cache → fetch + seed).
+Test changes:
+- Unit tests: `Repository<Topology>` mocks → S3 client mocks (`getObject`, `putObject`, `headObject`).
+- Integration tests: POST DTM → assert lands in LocalStack S3 with bumped `version`, assert beacon fires.
+- New test: ETag concurrency — two parallel POSTs, one wins (200), one loses (409).
+- Existing Day-1 boot tests: unchanged semantics.
 
-### Gateway repo (deferred until after this refactor)
-
-Gateway stub spec (`2026-05-10-gateway-stub-contract-validation-design.md`, committed locally) needs revision before execution to reflect:
-- Drop Postgres from container list
-- 4 containers: LocalStack + device-api + emqx + mock-modbus-server
-- Real device-api in the test (locked at user direction)
-
-Revision happens after this refactor lands.
+**Gateway stub e2e test:** see [gateway stub spec](2026-05-10-gateway-stub-contract-validation-design.md). Spec needs minor revision after this refactor lands (drop Postgres from its container list; net 4 containers: LocalStack + device-api + emqx + mock-modbus-server).
 
 ---
 
-## Library choices
+## Libraries
 
-| Concern | Library | Notes |
-|---|---|---|
-| S3 client | `@aws-sdk/client-s3` | Already in use for PR 4 Day-1 boot; reuse the existing wrapper |
-| ETag handling | Native S3 response | No extra lib |
-| In-memory cache | Plain class field on `TopologyService` | YAGNI on cache lib |
+- `@aws-sdk/client-s3` — already in use from PR 4 Day-1 boot; reuse existing wrapper.
+- ETag handling — native S3 response headers; no extra dep.
+- In-memory cache — plain class field on `TopologyService`; no cache lib.
 
 ---
 
-## Migration / rollout
+## Migration
 
-- No production deployments exist yet — no data migration needed.
-- One PR lands the refactor end-to-end.
-- Post-merge: rebuild + publish device-api Docker image to GitLab registry (so gateway test can pull it in the next sub-project).
+No production deployments exist. Single PR lands the refactor end-to-end. Post-merge: rebuild + publish `ems-device-api` Docker image to GitLab registry (gateway stub will pull it in the next sub-project).
 
 ---
 
-## Net LOC impact
+## Net impact
 
-- Removed: ~108 LOC + 3 npm packages + 1 testcontainer
-- Added: ~70 LOC + 0 new deps + 0 new testcontainers (LocalStack already present)
-- Net: **~38 LOC deletion + simpler mental model** (one collaborator instead of two)
+- Removed: ~108 LOC, 3 npm packages, 1 testcontainer
+- Added: ~70 LOC, 0 new deps, 0 new testcontainers
+- Net: ~38 LOC deletion + one fewer collaborator in `TopologyService`
