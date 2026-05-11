@@ -32,7 +32,7 @@ The contract must satisfy:
 
 ## Decision
 
-A two-family topic model with fixed-depth segments per family, strict `{ts, value}` payloads, and unit-encoded topic slots backed by an enum-locked vocabulary in the AsyncAPI spec. Device-class templates own the canonical vocabulary; the per-deployment DTM overlays customer-facing display names.
+A two-family topic model with fixed-depth segments per family, strict `{ts, value}` payloads, and unit-encoded topic slots backed by an enum-locked vocabulary in the AsyncAPI spec. Device templates own the canonical vocabulary; the per-deployment DTM overlays customer-facing display names.
 
 ### Key Architectural Decisions
 
@@ -141,7 +141,7 @@ EnumSample     { ts, value: string }   # value constrained to enum:[...] in the 
 TriggerSample  { ts }                  # commands only — reset, clear, fire-and-forget
 ```
 
-The `EnumSample` channel schema in the generated AsyncAPI spec sets `value.enum` to the ordered list of label keys from the class `values:` block (e.g. `["AUTO", "MANUAL", "RUNPQ"]`). The gateway translates raw register integers to the matching label before publish; the HMI renders the label it receives — no int-to-string logic in any consumer.
+The `EnumSample` channel schema in the generated AsyncAPI spec sets `value.enum` to the ordered list of label keys from the template `values:` block (e.g. `["AUTO", "MANUAL", "RUNPQ"]`). The gateway translates raw register integers to the matching label before publish; the HMI renders the label it receives — no int-to-string logic in any consumer.
 
 **Rationale**: Symmetric across measurements and commands where shape matches; trigger is command-only (a `reset` has no payload value).
 
@@ -197,7 +197,7 @@ Each level can declare its own measurements/commands. Module-level rollups (whol
 - Renaming a label is a metadata-only change → patch-level spec bump → re-fetch but no resubscribe
 - Codegen still produces deterministic Rust struct fields and TypeScript constants from canonical names
 
-**Resolution order**: DTM override → class default → humanized canonical.
+**Resolution order**: DTM override → template default → humanized canonical.
 
 #### 9. Identifier Format: Snake-Case Slugs, Immutable Post-Creation
 
@@ -205,7 +205,7 @@ Each level can declare its own measurements/commands. Module-level rollups (whol
 
 **Rationale**: UUID identifiers destroy operator readability in topics; renaming would invalidate every subscriber.
 
-**Uniqueness scope**: `site_id` unique within deployment, `device_id` unique within site, `measurement` unique within device class.
+**Uniqueness scope**: `site_id` unique within deployment, `device_id` unique within site, `measurement` unique within template.
 
 #### 10. Spec Versioning: Semver with Diff-Free Topology Events
 
@@ -288,11 +288,11 @@ Consumers that are not devices — `ems-hmi`, `ems-analyst-server`, `platform-ap
 ### Negative
 - Industrial-historian egress (PI, Ignition) needs a quality-stitching adapter
 - Adding a unit is not free — spec change → `topology_changed` → consumer re-fetch
-- Class-template governance becomes a real engineering surface (PR review, versioning discipline)
+- Template governance becomes a real engineering surface (PR review, versioning discipline)
 
 ### Risks
 - Drift between gateway code and `x-source` binding metadata in spec — mitigated by gateway-codegen-from-spec
-- Class-vocabulary bikeshedding moves from per-PR to per-class-design — same problem, different cadence
+- Template-vocabulary bikeshedding moves from per-PR to per-template-design — same problem, different cadence
 - MVP basic auth is a known short-term gap; ADR-003 owes the role-based design
 
 ## Alternatives Considered
@@ -316,7 +316,7 @@ Consumers that are not devices — `ems-hmi`, `ems-analyst-server`, `platform-ap
 
 This ADR should be reviewed:
 - **When the unit vocabulary needs extension** — add via patch-level spec bump, document the new unit
-- **When a new device class is proposed** — class-template governance kicks in, not this ADR
+- **When a new template is proposed** — template governance kicks in, not this ADR
 - **When auth scope changes** — new tenant model, partner integration, or compliance requirement triggers ADR-003 supersession of section 13
 - **When industrial-historian egress is implemented** — verify the time-join quality pattern holds in practice
 

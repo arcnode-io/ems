@@ -177,6 +177,8 @@ rectangle daemons #line.dashed {
     rectangle grafana
 }
 
+device_api -> minio: GET dtm.json (boot, per ADR-003)
+device_api -> postgres_document: persist DTM + version
 ```
 
 ## E2E Testing
@@ -197,7 +199,6 @@ ci_runner -> device_api: POST /topology (test DTM)
 device_api -> device_api: generate AsyncAPI spec
 
 industrial_gateway -> device_api: GET /asyncapi
-industrial_fixtures -> device_api: GET /asyncapi
 ems_hmi -> device_api: GET /asyncapi
 
 == fixture telemetry ==

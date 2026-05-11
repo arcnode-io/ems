@@ -1,7 +1,7 @@
 # ADR-001: System Architecture for Energy Management Platform
 
 **Status:** Accepted  
-**Date:** 2025-08-05  
+**Date:** 2025-08-05 (revised 2026-05-10 — cloud persistence stack folded in from former ADR-004)  
 **Decision Makers:** Development Team  
 **Consulted:** Energy Domain SMEs, Platform Engineering  
 **Informed:** Course Participants, Operations Team
@@ -121,9 +121,38 @@ See [`ems/readme.md`](readme.md) for live topology, sequence, and deployment dia
 **Implications**:
 - `edp-api` computes `buses[]` from the sizing payload when it generates the DTM — it produces both in the same job
 - `buses[]` entries are validated against `devices`: every `member.device_id` must resolve to a declared device
-- Bus bars are not devices — they carry no `device_id` in `devices`, no MQTT topics, no class
+- Bus bars are not devices — they carry no `device_id` in `devices`, no MQTT topics, no template
 - `ems-hmi` renders bus bars as horizontal bars with device nodes hanging off them; live MQTT measurements overlay each device node keyed by `device_id`
 - Legacy approach (hand-drawn per-site SVG, e.g. Fractal) rejected: breaks on topology changes, doesn't scale
+
+#### 7. Cloud Persistence: Aurora Serverless PG + Tiger Cloud + Neo4j Aura, CFN-Provisioned
+
+**Decision**: Cloud-path persistence splits across three managed services, provisioned by the single per-order CFN template:
+
+| Slice | Service | Provisioning |
+|---|---|---|
+| Document | Aurora serverless PG (`ems_document` db) | Native `AWS::RDS::DBCluster` |
+| Vector | Aurora serverless PG (`ems_vector` db, `vector` ext) | Same cluster, separate db |
+| Time series | Tiger Cloud | Inline CFN custom-resource Lambda → Tiger REST API |
+| Graph | Neo4j Aura | Inline CFN custom-resource Lambda → Aura REST API |
+| Object | S3 | Native `AWS::S3::Bucket` (per ADR-003) |
+
+Operator pastes six vendor API tokens (Tiger access key + secret + project id; Aura OAuth client + secret + tenant id) as CFN parameters. All resulting connection strings flow through Secrets Manager into EC2 UserData and the docker-compose stack it starts. Operator never copies a connection string.
+
+**Rationale**:
+- OSS plug-and-play: one CFN file → fully provisioned stack; no manual vendor-console instance creation, no connection-string copy/paste
+- Aurora serverless scale-to-0-ACU (Nov 2024) made AWS-native managed PG cost-competitive at idle; `pgvector` is native (0.7.0+ with HNSW parallelism) — replaces Neon for document + vector with no app code change
+- Tiger Cloud kept for TimescaleDB-specific features (compression, continuous aggregates, hyperfunctions); Aurora cannot host the TimescaleDB extension
+- Neo4j Aura kept for Cypher; Neptune-openCypher port is out of scope for a deployment redesign
+- Inline Lambdas (Python `Code.ZipFile` ~3 KB each) keep the CFN artifact self-contained per §5 — no runtime dependency on Arcnode infra
+- Neon dropped AWS Marketplace billing on 2026-02-06, closing the cleanest single-AWS-bill path for Neon
+
+**Implications**:
+- Operator subscribes to two vendors (Tiger Cloud, Neo4j Aura) and generates API tokens — six CFN params total
+- Aurora bootstrap Lambda requires a psycopg2 layer (community ARN at MVP; self-publish later)
+- Single-AZ subnet group at MVP; second AZ is a follow-up
+- Stack-delete may orphan vendor instances if the Delete handler fails — handlers are idempotent (404 → success) to mitigate; operator may fall back to vendor console
+- ISO + dev-compose unchanged: symmetry at the protocol layer (Postgres + Bolt + S3); cloud just splits time series into a separate Tiger Cloud cluster
 
 ## Implementation Details
 
@@ -169,21 +198,17 @@ See [`ems/readme.md`](readme.md) for cloud (AWS) and on-prem (ISO) deployment di
 - **Would add**: Scalability patterns, educational K8s exposure
 - **Would lose**: Single-click deployment, air-gapped simplicity, zero-ops operator experience
 
-###  Managed Postgres Service (like Neon) with TimeSeries Extension
+### Pure AWS-native persistence (Aurora for all slices + Neptune)
+- **Rejected for MVP**: TimescaleDB features (compression, continuous aggregates, hyperfunctions) and Cypher are in active app code; moving to Aurora-with-pg_partman + Neptune-openCypher would require app changes outside the scope of a deployment redesign. Aurora *is* used for the document + vector slices — see Key Decision #7.
+- **Would simplify**: Single cloud provider billing, unified IAM and networking, consolidated monitoring
+- **Would lose**: TimescaleDB features for time series; Cypher for graph
+- **Revisit**: If AWS ships a Timescale-compatible extension, or if app code moves off TimescaleDB / Cypher
 
-> **Note (2026-05-10):** [ADR-004](cloud_persistence_provisioning_adr.md) supersedes this rejection for the **document + vector slice** (Aurora serverless PG with `pgvector` ext, OSS plug-and-play driver). The rejection still holds for the **time-series slice** — Tiger Cloud is kept for TimescaleDB features.
+### Neon for document + vector
+- **Rejected (2026-05-10)**: Neon dropped AWS Marketplace billing on 2026-02-06 (post-Databricks acquisition), closing the single-AWS-bill path. Aurora serverless became cost-competitive at idle with scale-to-0-ACU (Nov 2024) and supports `pgvector` natively — same vanilla-Postgres protocol surface, no app code change. See Key Decision #7.
 
-- **Rejected**: The educational value of learning production TimescaleDB feature is significant if you're building time-series expertise.
-- **Would simplify**: Initial setup for one service for document and time-series data, like neon. Lower entry cost (\$0 free tier vs $30/month
-- **Would lose**: Compression (5-10x storage savings), continuous aggregates, data tiering, optimized ingestion performance (50K+ vs 5K-15K device capacity), purpose-built time-series tooling and monitoring
-- **Implications**: Seed data and run devices when demoing cloud. Pause service otherwise. still have to pay for storage ~$0.18/GB (not compute)
-
-
-### Managed AWS Services (like Aurora Serverless) vs Specialized Third-Party Services
-- **Rejected**: AWS services optimized for general workloads, not specialized use cases. Higher operational complexity managing multiple AWS database services vs purpose-built solutions
-- **Would simplify**: Single cloud provider billing, unified IAM and networking, native AWS service integration, consolidated monitoring and logging
-- **Would lose**: Specialized features (database branching, time-series optimizations), competitive pricing for small workloads, purpose-built developer experiences, best-in-class tooling for specific use cases
-- **Implications**: Already using Neo4j Aura (third-party service), so maintaining consistency with specialized services for each data model. Would require building custom solutions for features that specialized services provide out-of-the-box. **No code changes required between services - only connection string environment variables need updating (all use standard PostgreSQL and Neo4j protocols)**
+### Pre-provisioning vendor instances via platform-api before CFN download
+- **Rejected**: Customer data would live under Arcnode's vendor org account, complicating ownership and billing. OSS users without an Arcnode platform-api relationship would have no path forward.
 
 ### Neo4j as Graph Database
 - **Chosen Neo4j**: Mature graph database with robust ecosystem, extensive documentation, and established community

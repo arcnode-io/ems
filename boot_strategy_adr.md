@@ -88,7 +88,6 @@ For LocalStack / minio: anonymous or static credentials passed via environment v
 ### Scope boundaries
 
 - **Out of scope:** dynamic CRUD endpoints (covered by ADR-002 §14 + sub-project C)
-- **Out of scope:** AsyncAPI version bump or `system/topology_changed` broadcast on boot seed (sub-project C)
 - **Out of scope:** A bundled default DTM ("starter" inside the image) — explicitly rejected
 - **Out of scope:** Mounted-file fallback — explicitly rejected (was the goal of this revision)
 
@@ -130,7 +129,7 @@ Fetching unconditionally (then deciding whether to apply) surfaces S3-side issue
 - Reuses existing arcnode-artifacts bucket convention from edp-api
 
 ### Negative
-- ems-device-api gains a runtime S3 SDK dependency (currently no S3 client in TS)
+- ems-device-api gains a runtime `@aws-sdk/client-s3` dependency
 - Dev requires running LocalStack or a sample HTTP server (already common for edp-api work, modest dev-env friction)
 - ISO deployments must populate minio with the DTM at imaging time
 
