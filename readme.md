@@ -19,8 +19,7 @@ The EMS (Energy Management System) suite is the software that runs on a deployed
 
 ## Decisions
 
-- [ADR-001: System Architecture](system_adr.md)
-- [ADR-002: MQTT Topic Structure and Payload Conventions](topic_structure_adr.md)
+- [System ADR](system_adr.md) — architecture, MQTT contract, boot
 
 # Diagrams
 
@@ -83,7 +82,7 @@ participant ems_hmi
 participant ercot_api
 collections third_party_apis
 == bootstrap ==
-device_api -> s3: GET dtm.json (per ADR-003)
+device_api -> s3: GET dtm.json (per system_adr §22)
 device_api -> document: persist DTM + generate AsyncAPI v3 spec
 device_api -> broker: publish system/topology_changed { ts, version }
 == distribute topics ==

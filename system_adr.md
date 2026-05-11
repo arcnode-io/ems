@@ -1,245 +1,327 @@
-# ADR-001: System Architecture for Energy Management Platform
+# System ADR
 
-**Status:** Accepted  
-**Date:** 2025-08-05 (revised 2026-05-10 — cloud persistence stack folded in from former ADR-004)  
-**Decision Makers:** Development Team  
-**Consulted:** Energy Domain SMEs, Platform Engineering  
-**Informed:** Course Participants, Operations Team
+Three sections:
 
-## Context
+- §1–§7: Architecture
+- §8–§21: MQTT contract
+- §22: Boot
 
-We need to design a system architecture for a modern energy management platform that:
+Diagrams: see [`readme.md`](readme.md).
 
-1. **Handles diverse industrial protocols** (Modbus, DNP3, Redfish, SNMP, CANbus)
-2. **Processes real-time telemetry** at 2-second intervals from grid equipment
-3. **Supports both cloud and on-premise deployments** with different operational models
-4. **Enables ML forecasting and AI-powered analysis** of energy data
-5. **Provides real-time visualization** for grid operators
-6. **Serves as educational platform** demonstrating modern cloud-native practices
+## Architecture
 
-The system must balance:
-- Industry standards vs modern development practices
-- Operational simplicity vs educational value
-- Cost efficiency vs scalability requirements
-- Protocol diversity vs architectural consistency
+### §1. MQTT as central event bus
 
-## Decision
+*Why.* SCADA shops already speak MQTT. AsyncAPI describes the topics. Picking a non-MQTT bus would mean re-teaching every integrator we work with.
 
-We will implement a **microservices architecture with MQTT-based event streaming**, prioritizing industry standards and educational value over operational simplicity.
+All telemetry flows over MQTT (EMQX). AsyncAPI documents the topics.
 
-### Core Architecture
+### §2. No API gateway
 
-See [`ems/readme.md`](readme.md) for live topology, sequence, and deployment diagrams.
+*Why.* A gateway adds a service we'd have to deploy, secure, observe, and recover. Service URLs are known per-deployment; the SPA can call them directly. Per-service auth is repetitive but cheap.
 
-### Key Architectural Decisions
+Frontend SPA calls backend services directly. Each service owns its own auth, CORS, rate limiting.
 
-#### 1. MQTT as Central Event Bus
-**Decision**: Use MQTT for all telemetry data flow rather than direct protocol translation or WebSockets.
+### §3. Dynamic configuration from device-api
 
-**Rationale**:
-- Industry standard for SCADA/IoT systems
-- AsyncAPI documentation support
-- Existing team expertise in energy sector
-- Can be productized as standalone offering
+*Why.* Commissioning a device or swapping a connection should not require redeploying the gateway and HMI. They re-fetch from device-api and pick up the change.
 
-**Implications**:
-- Requires MQTT broker infrastructure (EMQX)
-- Topic namespace management becomes critical
+Protocol gateways and HMI fetch topology and AsyncAPI over HTTP from `ems-device-api`. No static config files distributed. Exponential backoff on startup.
 
-#### 2. No API Gateway Pattern
-**Decision**: Frontend SPA calls backend services directly without API gateway abstraction.
+### §4. Polyglot microservices
 
-**Rationale**:
-- Reduces architectural complexity
-- Avoids single point of failure
-- Direct error handling per service
-- Sufficient for known service endpoints
+*Why.* Rust where memory safety on edge hardware matters. Python where the ML ecosystem lives. TypeScript where the web ecosystem lives. Standardizing on one would force at least one team to fight their toolchain.
 
-**Implications**:
-- Per-service authentication handling
-- Multiple CORS configurations
-- Less centralized rate limiting
-- Potential performance impact from multiple calls
+- Rust — protocol handling (`industrial-fixtures`, `industrial-gateway`, `line-controller-pst`)
+- Python — ML / agents / `line-controller-dlr`
+- TypeScript — `device-api`, `hmi`
 
-#### 3. Dynamic Configuration Model
-**Decision**: Protocol gateways fetch configuration via HTTP from device-api rather than static files.
+### §5. Two deployment paths: CFN or ISO
 
-**Rationale**:
-- Enables dynamic topology updates
-- Centralized configuration management
-- Auto-generates MQTT topics from topology
-- Supports multi-tenant deployments
+*Why.* Operators run the stack themselves. Kubernetes is too much to learn for a single-site EMS. CFN covers AWS-connected sites; ISO covers air-gapped defense forward. Same image, different wrapper.
 
-**Implications**:
-- Network dependency at gateway startup
-- Requires device-api availability
-- Exponential backoff for resilience
-- More complex than file-based config
+| Path | Trigger | Mechanism |
+|---|---|---|
+| Cloud CFN | `aws_partition ∈ {standard, govcloud}` | Per-order CloudFormation YAML download from delivery portal; operator runs `aws cloudformation create-stack` locally |
+| Air-gapped ISO | `aws_partition == none` or `deployment_context == defense_forward` | Self-contained image with DTM, SSH key, `ems_mode` baked in |
 
-#### 4. Polyglot Microservices
-**Decision**: Use language best suited for each domain rather than standardizing on one.
+No Kubernetes. No IaC on operator side. `platform-api` composes the per-order CFN template on demand and uploads to S3 as `orders/{id}/ems-stack.yaml`. Each YAML bakes `deployment_uuid`, `dtm_url`, `ems_mode` directly.
 
-**Rationale**:
-- Rust for safety-critical protocol handling
-- Python for ML/data science ecosystem
-- TypeScript for modern web development
-- Leverages existing libraries per domain
+### §6. SLD topology in DTM, rendered programmatically by HMI
 
-**Implications**:
-- Multiple build pipelines and toolchains
-- Diverse operational patterns
-- Higher team skill requirements
-- Library-agnostic interfaces required
+*Why.* Per-site hand-drawn SVGs rot the moment topology changes. Topology is data; the diagram is a function of the data.
 
-#### 5. Two Deployment Paths: CloudFormation or Air-Gapped ISO
-**Decision**: Operator deploys via a per-order CFN yaml download (AWS standard or GovCloud) or a self-contained ISO image (air-gapped / defense). No Kubernetes. No IaC tooling on the operator's side.
+Electrical bus topology is encoded in a `buses[]` block in the DTM. `edp-api` computes `buses[]` from the sizing payload and emits it alongside `devices` in the same job. IEC 61850 alignment: `buses[].id` = `ConnectivityNode`, `buses[].type` = `VoltageLevel` domain, `buses[].members[]` = `Terminal` references, `port` = Terminal name. Bus bars are not devices — no `device_id`, no MQTT topics. HMI renders bars as horizontals with device nodes hanging off; live measurements overlay each device node keyed by `device_id`.
 
-**Rationale**:
-- Operators should not need K8s expertise to run an EMS
-- Per-order CFN yaml is downloaded from the portal and deployed by the operator via `aws cloudformation create-stack` CLI or AWS Console upload — Arcnode has no access to the resulting stack
-- Each yaml is a complete, standalone artifact baking deployment_uuid + dtm_url + ems_mode directly in; eliminates release-coordination overhead
-- ISO embeds the DTM, SSH key, and ems_mode directly — no network round-trips post-delivery
-- `aws_partition` determines the path: `standard` / `govcloud` → CFN, `none` → ISO
-- `deployment_context == defense_forward` locks to ISO
+### §7. Cloud persistence: Aurora + Tiger Cloud + Neo4j Aura + S3
 
-**Implications**:
-- `platform-api` composes the per-order CFN template on demand (no release dance) and uploads yaml to S3 as `orders/{id}/ems-stack.yaml`
-- Operator downloads from the delivery portal and runs locally — full control, no single-click convenience, but no hidden state
-- No runtime infrastructure dependency between Arcnode and the operator's EMS
-- ISO path unchanged: self-contained image with DTM + SSH key + ems_mode baked in
-
-#### 6. SLD Topology in DTM, Rendered Programmatically by HMI
-
-**Decision**: Electrical bus topology is encoded in a `buses[]` block in the DTM. `ems-hmi` renders the SLD from DTM data at runtime — it is not a hand-drawn per-deployment SVG.
-
-**Rationale**:
-- DTM is already the single source of truth for per-deployment data; bus topology is a relationship between DTM `device_id`s, not a separate concern
-- Per-deployment SVG authoring doesn't scale and breaks on every site change
-- `edp-api` already has the full electrical design (sizing payload) and is the natural author of `buses[]`
-- IEC 61850-aligned: `buses[].id` = `ConnectivityNode`, `buses[].type` = `VoltageLevel` domain, `buses[].members[]` = `Terminal` references; `port` = Terminal name for bridging devices
-
-**Implications**:
-- `edp-api` computes `buses[]` from the sizing payload when it generates the DTM — it produces both in the same job
-- `buses[]` entries are validated against `devices`: every `member.device_id` must resolve to a declared device
-- Bus bars are not devices — they carry no `device_id` in `devices`, no MQTT topics, no template
-- `ems-hmi` renders bus bars as horizontal bars with device nodes hanging off them; live MQTT measurements overlay each device node keyed by `device_id`
-- Legacy approach (hand-drawn per-site SVG, e.g. Fractal) rejected: breaks on topology changes, doesn't scale
-
-#### 7. Cloud Persistence: Aurora Serverless PG + Tiger Cloud + Neo4j Aura, CFN-Provisioned
-
-**Decision**: Cloud-path persistence splits across three managed services, provisioned by the single per-order CFN template:
+*Why.* Aurora is AWS-native Postgres that bills to zero at idle and ships pgvector — one cluster covers document and vector. Tiger Cloud is here for the TimescaleDB features that aren't a flag on stock Postgres (compression, continuous aggregates, hyperfunctions). Neo4j Aura is here for Cypher. Six API tokens at install time is the price of letting the operator never copy a connection string.
 
 | Slice | Service | Provisioning |
 |---|---|---|
-| Document | Aurora serverless PG (`ems_document` db) | Native `AWS::RDS::DBCluster` |
+| Document | Aurora serverless PG (`ems_document` db) | `AWS::RDS::DBCluster` |
 | Vector | Aurora serverless PG (`ems_vector` db, `vector` ext) | Same cluster, separate db |
 | Time series | Tiger Cloud | Inline CFN custom-resource Lambda → Tiger REST API |
 | Graph | Neo4j Aura | Inline CFN custom-resource Lambda → Aura REST API |
-| Object | S3 | Native `AWS::S3::Bucket` (per ADR-003) |
+| Object | S3 | `AWS::S3::Bucket` (see §22) |
 
-Operator pastes six vendor API tokens (Tiger access key + secret + project id; Aura OAuth client + secret + tenant id) as CFN parameters. All resulting connection strings flow through Secrets Manager into EC2 UserData and the docker-compose stack it starts. Operator never copies a connection string.
+Operator pastes six vendor API tokens as CFN params (Tiger access key + secret + project id; Aura OAuth client + secret + tenant id). Connection strings flow through Secrets Manager into EC2 UserData and the docker-compose stack. Inline Lambdas (~3 KB `Code.ZipFile`) keep the CFN artifact self-contained per §5.
 
-**Rationale**:
-- OSS plug-and-play: one CFN file → fully provisioned stack; no manual vendor-console instance creation, no connection-string copy/paste
-- Aurora serverless scale-to-0-ACU (Nov 2024) made AWS-native managed PG cost-competitive at idle; `pgvector` is native (0.7.0+ with HNSW parallelism) — replaces Neon for document + vector with no app code change
-- Tiger Cloud kept for TimescaleDB-specific features (compression, continuous aggregates, hyperfunctions); Aurora cannot host the TimescaleDB extension
-- Neo4j Aura kept for Cypher; Neptune-openCypher port is out of scope for a deployment redesign
-- Inline Lambdas (Python `Code.ZipFile` ~3 KB each) keep the CFN artifact self-contained per §5 — no runtime dependency on Arcnode infra
-- Neon dropped AWS Marketplace billing on 2026-02-06, closing the cleanest single-AWS-bill path for Neon
+Aurora bootstrap Lambda requires a psycopg2 layer. Single-AZ subnet group. Stack-delete may orphan vendor instances if Delete handler fails; handlers are idempotent (404 → success).
 
-**Implications**:
-- Operator subscribes to two vendors (Tiger Cloud, Neo4j Aura) and generates API tokens — six CFN params total
-- Aurora bootstrap Lambda requires a psycopg2 layer (community ARN at MVP; self-publish later)
-- Single-AZ subnet group at MVP; second AZ is a follow-up
-- Stack-delete may orphan vendor instances if the Delete handler fails — handlers are idempotent (404 → success) to mitigate; operator may fall back to vendor console
-- ISO + dev-compose unchanged: symmetry at the protocol layer (Postgres + Bolt + S3); cloud just splits time series into a separate Tiger Cloud cluster
+ISO and dev paths use Postgres + Bolt + minio — same protocol surface as cloud, just collocated.
 
-## Implementation Details
+## MQTT contract
 
-See [`ems/readme.md`](readme.md) for cloud (AWS) and on-prem (ISO) deployment diagrams and data flow sequences.
+### §8. Two families: `measurements` and `commands`
 
-## Consequences
+*Why.* Everything a device emits vs everything sent to a device. Collapsing "measurement / status / state / calculation / alarm" into one family removes the gray zone — they're all just things the device emits.
 
-### Positive
-- **UTC-only timestamps**: All timestamps — sensor samples, API responses, UI display — are UTC epoch milliseconds. No local-time conversion at any layer; operators do their own offset math.
-- **Industry Alignment**: Uses familiar patterns for energy sector teams
-- **Educational Value**: Exposure to modern cloud-native stack
-- **Flexibility**: Supports diverse protocols and deployment models
-- **Scalability Path**: Can grow from pilot to production
-- **Real-time Performance**: 2-second telemetry with 30 FPS visualization
+- `measurements/` — everything a device emits (sensor reads, computed values, health, alarms, command acks)
+- `commands/` — everything sent to a device
 
-### Negative
-- **Operational Complexity**: Multiple languages, databases, and services
-- **Over-Engineering**: Kubernetes adds unnecessary overhead for most loads
-- **Cost Inefficiency**: Managed services and K8s increase expenses
-- **Learning Curve**: Students must understand entire stack
-- **Maintenance Burden**: Diverse technology stack requires broad expertise
+`system/` carries broker-internal events (topology changed, etc.) — not a family. Boolean/enum readings are measurements with `unit=none`. Derived quantities (DLR dynamic rating) are measurements.
 
-### Risks
-- **MQTT Broker Failure**: Central dependency requires HA configuration
-- **Protocol Library Changes**: Rust ecosystem volatility
-- **Database Sprawl**: Multiple specialized databases increase complexity
-- **Skill Availability**: Finding polyglot developers is challenging 
+### §9. Fixed-depth topics
 
-## Alternatives Considered
+*Why.* Wildcards are predictable when every topic of a kind has the same number of slots. The parser switches on one slot. Broker ACL hooks match on slot positions without payload introspection.
 
-### Monolithic Architecture
-- **Rejected**: Doesn't demonstrate microservices patterns
-- **Would simplify**: Deployment, debugging, initial development
-- **Would lose**: Scalability, educational value, independent deployment
+```
+sites/{site_id}/devices/{device_id}/measurements/{measurement}/{unit}        # 6 segments
+sites/{site_id}/devices/{device_id}/commands/{verb}/{target}/{unit}          # 7 segments
+system/{event_type}                                                          # 2 segments
+```
 
-### WebSocket-Only Architecture  
-- **Rejected**: Not industry standard for SCADA systems
-- **Would simplify**: Browser integration, protocol count
-- **Would lose**: Ecosystem compatibility, AsyncAPI support
+Parser switches on slot 4 (`family ∈ {measurements, commands}`). Unitless measurements use literal `none` in the unit slot. Verb enum: `[set, reset, clear, start, stop, enable, disable]`.
 
-### Kubernetes Deployment
-- **Rejected**: Operators shouldn't need K8s expertise to run an EMS
-- **Would add**: Scalability patterns, educational K8s exposure
-- **Would lose**: Single-click deployment, air-gapped simplicity, zero-ops operator experience
+### §10. Unit vocabulary in topic, enum-locked in spec
 
-### Pure AWS-native persistence (Aurora for all slices + Neptune)
-- **Rejected for MVP**: TimescaleDB features (compression, continuous aggregates, hyperfunctions) and Cypher are in active app code; moving to Aurora-with-pg_partman + Neptune-openCypher would require app changes outside the scope of a deployment redesign. Aurora *is* used for the document + vector slices — see Key Decision #7.
-- **Would simplify**: Single cloud provider billing, unified IAM and networking, consolidated monitoring
-- **Would lose**: TimescaleDB features for time series; Cypher for graph
-- **Revisit**: If AWS ships a Timescale-compatible extension, or if app code moves off TimescaleDB / Cypher
+*Why.* Operator at 3am should be able to read the unit without looking it up. Enum-lock at codegen time prevents `degC` vs `celsius` divergence — build fails if anyone tries.
 
-### Neon for document + vector
-- **Rejected (2026-05-10)**: Neon dropped AWS Marketplace billing on 2026-02-06 (post-Databricks acquisition), closing the single-AWS-bill path. Aurora serverless became cost-competitive at idle with scale-to-0-ACU (Nov 2024) and supports `pgvector` natively — same vanilla-Postgres protocol surface, no app code change. See Key Decision #7.
+```
+volts | amps | watts | vars | voltamperes | watt_hours | hertz |
+celsius | percent | watts_per_m2 | meters_per_second |
+bar | liters_per_minute | none
+```
 
-### Pre-provisioning vendor instances via platform-api before CFN download
-- **Rejected**: Customer data would live under Arcnode's vendor org account, complicating ownership and billing. OSS users without an Arcnode platform-api relationship would have no path forward.
+Lowercase, plural where natural (`volts` not `volt`), short compounds (`watts_per_m2` not `watts_per_meter_squared`), `vars` for reactive power. No SI-prefixed duplicates (`watt_hours` only). Adding a unit is a spec change → patch-level bump → `system/topology_changed` → consumers re-fetch.
 
-### Neo4j as Graph Database
-- **Chosen Neo4j**: Mature graph database with robust ecosystem, extensive documentation, and established community
-- **Benefits**: 
-  - Native support for labeled property graphs
-  - Strong multi-tenancy support via node labels
-  - Comprehensive AI and ML integration capabilities
-  - Cypher query language for flexible graph querying
-- **Implementation Strategy**:
-  - Use node labels to create logical separations within the graph
-  - Leverage Neo4j's built-in graph algorithms and ML libraries
-  - Utilize Neo4j's cloud offerings (AuraDB) for managed deployments
-- **Graph Modeling Example**:
-  ```cypher
-  CREATE (b:BessModule:Tesla {name: 'External BESS', model: 'Megapack 3'})
-  CREATE (g:GridModule:Arcnode {name: 'Grid Container', site: 'brookside-dc-1'})
-  CREATE (b)-[:CONNECTED_TO]->(g)
-  ```
-- **Implications**: Enables sophisticated graph-based analytics for energy management, supporting complex relationship tracking and AI-powered insights
+### §11. Gateway converts raw → engineering units at boundary
 
-## Review
+*Why.* One place to put the scaling math. Three consumers downstream stay simple. The spec records the math for regulatory audit.
 
-This ADR should be reviewed:
-- **Quarterly**: Assess if Kubernetes overhead is justified
-- **Per cohort**: Gather feedback on architectural complexity
-- **Major changes**: New protocols, deployment targets, or requirements
-- **Cost reviews**: Evaluate if educational value justifies expenses
+Industrial protocols carry raw integers with vendor scaling. Gateway applies scale and offset; MQTT carries the engineering value. Scaling metadata lives in AsyncAPI under `x-source` per channel:
+
+```yaml
+x-source:
+  protocol: modbus_tcp
+  server_unit_id: 1
+  register_type: holding
+  address: 3000
+  data_type: int16
+  word_order: high_low
+  scale: 0.1
+  offset: 0
+```
+
+Gateway code is codegenned from the spec.
+
+### §12. Strict `{ts, value}` payload; quality via time-joined `status`
+
+*Why.* Quality information is rare and recoverable. Don't pay wire bytes for it on every sample. Industrial historians that need it run the time-join once in an adapter.
+
+Every sample is `{ts, value}`. No quality, no source flags, no correlation IDs. Quality lives in a separate `status` measurement, joined by timestamp at query time (`LATERAL` join of status ≤ sample.ts). `ts` is RFC3339/ISO8601 string with `Z` suffix — ingests natively into TimescaleDB / TigerData `TIMESTAMPTZ`.
+
+### §13. Sample schemas
+
+*Why.* Four shapes cover every channel. Float for sensors, boolean for two-state things, enum for labeled states, trigger for commands with no payload.
+
+```
+FloatSample    { ts, value: number }
+BooleanSample  { ts, value: boolean }
+EnumSample     { ts, value: string }    # channel schema sets value.enum
+TriggerSample  { ts }                   # commands only — reset, clear, fire-and-forget
+```
+
+`EnumSample` channel sets `value.enum` from the template `values:` block (e.g. `["AUTO", "MANUAL", "RUNPQ"]`). Gateway translates raw register integers to the label before publish; HMI renders the label it receives. No int-to-string logic in any consumer.
+
+Verb → schema:
+
+| Verb | Schema |
+|---|---|
+| set | Float / Boolean / Enum |
+| start, stop, enable, disable | Boolean (persistent state) |
+| reset, clear | Trigger |
+
+### §14. Device templates as canonical vocabulary
+
+*Why.* Without templates, every deployment re-fights the naming bikeshed and downstream codegen has nothing concrete to target. Templates are PR-gated so the argument happens once at template-design time, then the rest of the system codegens against a known shape.
+
+*Why opinionated, not vendor-agnostic.* ARCNODE owns the inside of every container we ship and the integration of every BESS we support. Vendor-agnostic templates would force codegen and HMI to generalize against "any device might look like anything" — the wrong abstraction for a product that owns the inside of its containers. Opinionated templates let codegen targets be specific and HMI views be designed against known shapes.
+
+Measurements, commands, units, and protocol bindings live in **device templates** (e.g. `bess_module`, `dlr_sensor`). The DTM references templates by bare slug; it does not redefine measurements per deployment. Templates are PR-gated; canonical home is `edp-api/device_templates/`. Git history is the version source.
+
+**Module types.** Three roots:
+
+- `compute_module` — arcnode-fab (GPU servers, NVLink, DLC pumps, plate heat exchangers)
+- `grid_module` — arcnode-fab (AC switchgear, transformer, PCS, metering relays)
+- `bess_module` — BYO (Tesla Megapack/Megablock, CATL EnerOne)
+
+For arcnode-fab containers, templates encode hardware design end-to-end. For BESS, templates encode the supported vendor's protocol surface and register map, authored by the ARCNODE team.
+
+**Hierarchy.** Each template declares a `contains:` block listing direct child templates (required and scalable). Containment chains arbitrarily; depth is unbounded. The DTM expresses this as a parent-chain tree: every device has an optional `parent: device_id` pointer. Topic addressing stays flat — `device_id` in the topic is the leaf, not a path; depth lives in the parent chain, walked by HMI/analyst codegen at render time. IEC 61850 alignment carried as optional metadata (`iec_61850.logical_nodes`, `iec_61850_ref` per measurement).
+
+Example tree (BESS-shaped; identical pattern for compute and grid):
+
+```
+bess_module_1             template: bess_module,   parent: null
+├── bess_rack_1           template: bess_rack,     parent: bess_module_1
+│   ├── bess_bms_1        template: bess_bms,      parent: bess_rack_1
+│   ├── bess_inverter_1   template: bess_inverter, parent: bess_rack_1
+│   └── bess_cell_1..N    template: bess_cell,     parent: bess_rack_1
+├── bess_rack_2
+└── ...
+```
+
+Each level declares its own measurements/commands. Module-level rollups (whole-module SOC), mid-level rollups (per-rack spread), and leaf reads (per-cell voltage) are independent channels, all flat in the topic, related only by `parent` links in the DTM.
+
+**Distribution.** `edp-api` embeds a `templates_used: Record<templateRef, DeviceTemplate>` map in every DTM payload, containing exactly the templates referenced by `devices`. Downstream consumers receive everything they need in one POST.
+
+**Per-deployment customization.** Per-device `extra_measurements:` escape hatch in the DTM. Use sparingly.
+
+User-defined template authoring is out of scope — new templates land via PR to `edp-api/device_templates/`. Device-level instantiation (using an existing template at a new `device_id`) is in scope — see §21.
+
+### §15. Two-layer naming: canonical + display
+
+*Why.* The customer wants to call it "Pile A DC Bus". The code wants `voltage_dc`. A display name override in the DTM keeps both right without breaking topic stability.
+
+Topic, code, and spec use the canonical name (e.g. `voltage_dc`). The DTM carries a `display_name` override per site, device, and measurement, propagated to AsyncAPI as `x-display-name` and rendered by the HMI. Renaming a label is a metadata-only change → patch bump → re-fetch but no resubscribe. Resolution order: DTM override → template default → humanized canonical.
+
+### §16. Identifier format: snake_case slugs, immutable
+
+*Why.* Operator readability — UUIDs make `mosquitto_sub -t '#'` unreadable. Immutability — renaming an ID would invalidate every subscriber.
+
+`^[a-z][a-z0-9_]{0,62}[a-z0-9]$`. Display names are mutable; identifiers are not. Uniqueness: `site_id` unique within deployment, `device_id` unique within site, `measurement` unique within template.
+
+### §17. Spec versioning: semver, diff-free events
+
+*Why.* Consumers always need to re-fetch the spec to be safe. A diff carried in the event would lie or go stale. The version in the event is an audit breadcrumb, not a computation input.
+
+AsyncAPI spec uses semver. Patch = metadata fix; minor = additive (new channel, new device); major = breaking (rename, remove, unit change). `system/topology_changed` carries only `{ts, version}` — consumers re-fetch the full spec and diff client-side. Consumers always re-fetch unconditionally.
+
+### §18. QoS and Retain per family
+
+*Why.* Retain on commands is the dangerous default — explicitly off so a setpoint replay does not unexpectedly spin a BESS.
+
+| Family | QoS | Retain | Why |
+|---|---|---|---|
+| measurements | 0 | true | High-rate telemetry; new subscriber sees latest immediately |
+| commands | 1 | false | Imperative-at-time; no replay on broker restart |
+| system | 1 | false | Transient triggers; no fire-on-new-connect |
+
+### §19. AsyncAPI spec written from device perspective
+
+*Why.* Device codegen runs on the most constrained hardware (Rust on ESP32 / Pi). Writing the spec from the device's viewpoint makes their code path literal. HMI and analyst invert during their own codegen — they have CPU to spare.
+
+`action: send` = device publishes; `action: receive` = device subscribes. Topology-update events appear as `action: receive` since devices subscribe to them. Non-device consumers (`hmi`, `analyst-server`, `platform-api`) invert during their own codegen. `family` (slot 4) is orthogonal to `action`: `action` distinguishes publisher from subscriber, `family` distinguishes data direction. MQTT bindings (QoS, retain) are inferred from `family` per §18; per-channel `bindings.mqtt` overrides only for exceptions.
+
+### §20. Basic auth
+
+*Why.* Broker is per-deployment private (per §5). Blast radius is one site. Roles, mTLS, and JWT are real work; do them when the threat model demands.
+
+Single MQTT username/password from `template-secrets.env`. Topic ACLs open. Roles, mTLS, JWT deferred.
+
+### §21. Dynamic device CRUD via `ems-device-api`
+
+*Why.* Operators commission, repair, and replace equipment in production. Forcing every change through a redeploy is operational friction without a safety benefit — the spec-regen and `topology_changed` mechanism already handles consumer reconciliation correctly. Template *authoring* stays PR-gated because adding a new measurement vocabulary item is an engineering change; template *instantiation* is a deployment-state change.
+
+Adding, removing, or updating a device — instantiating an existing template at a new `device_id`, swapping a `connection`, retitling a `display_name`, deleting a device — is a device-api operation, not a redeployment. Each successful mutation:
+
+1. Validates referential integrity (template ref, parent acyclic, `bus.members[]` consistency)
+2. Persists a new versioned topology row (audit reconstruction)
+3. Regenerates the AsyncAPI spec
+4. Bumps semver per §17
+5. Publishes `system/topology_changed { ts, version }` exactly once
+
+`POST /topology` (full DTM replacement) is the same regen-and-broadcast applied wholesale. Transactional CRUD groups multiple changes into one broadcast.
+
+**Scope:**
+
+| Operation | Allowed dynamically | Notes |
+|---|---|---|
+| Add device using existing template | yes | Must reference a template in `templates_used` or bundled set |
+| Remove device | yes | Cascades to children when parent; refuses if referenced by `bus.members[].device_id` until bus is updated |
+| Update `display_name` | yes | Patch bump |
+| Update `connection` (host/port/unit_id) | yes | Patch bump |
+| Update `parent` (re-parent) | yes | Validates parent chain acyclic |
+| Add/remove `extra_measurements` on a device | yes | Minor bump (additive) |
+| Introduce a new template at runtime | no | PR-gated (§14) |
+| Modify a template | no | PR-gated (§14) |
+
+`ems-hmi` is read-only against `/topology` and `/asyncapi` — not a CRUD client. CRUD is invoked by `platform-api` (bulk delivery), commissioning workflows, and integrator/operator tooling.
+
+## Boot
+
+### §22. Day-1 DTM via S3-compatible GET, configured by URL
+
+*Why.* Earlier multi-mechanism plumbing had four recipes (Docker volume, k8s ConfigMap, ECS sidecar/EFS/S3-fetch, ISO image bake) — each with its own failure modes; operators had to internalize all four. One code path against an S3-compatible endpoint — only the endpoint URL varies — collapses that matrix.
+
+Day-1 boot uses one mechanism: an S3-compatible `GetObject` against a URL set via `cfg.yml`. Same code path across cloud, ISO, dev, CI — only the endpoint URL varies.
+
+**Config:**
+
+```yaml
+local:
+  boot_dtm_s3_url: ~                      # null in dev → skip fetch
+  s3_endpoint_url: http://localhost:4566  # LocalStack
+beta:
+  boot_dtm_s3_url: s3://arcnode-artifacts/deployments/{deployment_id}/dtm.json
+  s3_endpoint_url: ~                      # null = real AWS S3
+```
+
+ISO overrides `s3_endpoint_url` to on-prem minio. Image is identical across contexts.
+
+**Behavior:**
+
+| `boot_dtm_s3_url` | Topology table | Action |
+|---|---|---|
+| set | empty | fetch + parse + validate + seed |
+| set | populated | fetch + skip seed (don't overwrite operator changes) |
+| unset | empty | log + skip (graceful empty start) |
+| unset | populated | log + skip |
+
+Fetch happens unconditionally when URL is set — surfaces S3-side issues at boot rather than at the next restart. Cost is one S3 GET per pod start.
+
+**Failure modes (all fatal when URL is set):**
+
+| Failure | Detection |
+|---|---|
+| S3 404 / auth / 4xx / 5xx | S3 SDK |
+| Invalid JSON | JSON parser |
+| Fails Zod `Dtm` validation | Zod |
+| `templates_used` slug unknown to bundled catalog | Same check as `POST /topology` |
+| DB write fails | Fatal with restart-loop (Docker restart policy) |
+
+URL unset = graceful empty start. `POST /topology` and the §21 CRUD endpoints are the canonical mutation surfaces.
+
+**Storage backend per context (same code, different endpoint):**
+
+| Context | `boot_dtm_s3_url` | `s3_endpoint_url` |
+|---|---|---|
+| Cloud (CFN + EC2 + docker-compose) | `s3://arcnode-artifacts/deployments/<id>/dtm.json` | unset → real AWS S3 |
+| On-prem ISO | `s3://arcnode-artifacts/deployments/<id>/dtm.json` | `http://minio:9000` |
+| Dev (docker-compose) | `s3://arcnode-artifacts/deployments/sample/dtm.json` | `http://localhost:4566` (LocalStack) |
+| CI / smoke | unset → skip | n/a |
+
+**Auth:** real AWS uses IAM via EC2 instance role (no creds in image); minio/LocalStack uses anonymous or static env-var creds (same pattern as `edp-api/src/bom_generator/manifest_client.py`).
+
+**Idempotency:** device-api never overwrites a populated topology table from a stale fetch. To re-seed, clear the table (e.g., a migration step before redeploy) or use §21 CRUD endpoints.
+
+**Out of scope:** bundled default DTM inside the image; mounted-file fallback; env-var inline JSON; Parameter Store / Secrets Manager.
 
 ## References
 
-- [MQTT in Industrial IoT](https://mqtt.org/use-cases/manufacturing/)
-- [AsyncAPI Specification](https://www.asyncapi.com/)
-- [Kubernetes Alternatives Analysis](https://k3s.io/)
-- [Time-Series Database Comparison](https://www.timescale.com/)
+- [readme.md](readme.md) — topology, sequence, deployment diagrams
+- [AsyncAPI 3.0](https://www.asyncapi.com/docs/reference/specification/v3.0.0)
+- [Sparkplug B](https://www.eclipse.org/tahu/spec/sparkplug_spec.pdf) — SCADA vocabulary reference
+- [edp-api `manifest_client.py`](../edp-api/src/bom_generator/manifest_client.py) — S3 fetch pattern
