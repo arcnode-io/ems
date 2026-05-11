@@ -144,7 +144,6 @@ rectangle third_party_apis #line.dashed {
     cloud permutable
 }
 
-device_api -> s3: GET dtm.json (boot)
 device_api -> aurora_serverless: persist DTM + version
 
 ```

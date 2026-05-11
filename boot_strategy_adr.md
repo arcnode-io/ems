@@ -8,7 +8,7 @@
 
 ## Context
 
-`ems-device-api` needs a DTM at boot to serve `/topology` and `/asyncapi` to its clients (gateway, line-controller, HMI). PR 1 + PR 2 of the redo-device-api foundation just landed the canonical Dtm shape that edp-api emits and device-api consumes. PR 3 added catalog-aware validation on `POST /topology`. None of those answer the question of where the day-1 DTM comes from — when an operator boots an ISO, deploys a CFN/ECS stack, or `docker compose up`s a dev environment, how does device-api find its first DTM?
+`ems-device-api` needs a DTM at boot to serve `/topology` and `/asyncapi` to its clients (gateway, line-controller, HMI). PR 1 + PR 2 of the redo-device-api foundation just landed the canonical Dtm shape that edp-api emits and device-api consumes. PR 3 added catalog-aware validation on `POST /topology`. None of those answer the question of where the day-1 DTM comes from — when an operator boots an ISO, deploys a CFN/EC2 stack, or `docker compose up`s a dev environment, how does device-api find its first DTM?
 
 Six candidate mechanisms were considered:
 
@@ -58,7 +58,7 @@ Note: when `boot_dtm_s3_url` is set and the table is populated, the fetch still 
 | Object body invalid JSON | **Fatal** | Production config error must surface at boot |
 | Body parses but fails Zod `Dtm` validation | **Fatal** | Schema drift between edp-api and device-api caught at boot |
 | Body validates but `templates_used` slug unknown to bundled catalog | **Fatal** | Catalog drift caught at boot; identical check to POST /topology |
-| DB write fails (e.g., DB unreachable) | **Fatal** with restart-loop | Pod restart until DB healthy; standard k8s/ECS pattern |
+| DB write fails (e.g., DB unreachable) | **Fatal** with restart-loop | Container restart until DB healthy; standard docker-compose / Docker restart-policy pattern |
 | `boot_dtm_s3_url` is unset | **Graceful empty start** with info log | Tests / CI / fresh-from-zero deployments |
 
 ### Storage backend per deployment context
@@ -67,7 +67,7 @@ Same code path. Different `s3_endpoint_url`:
 
 | Context | `boot_dtm_s3_url` | `s3_endpoint_url` |
 |---|---|---|
-| **Cloud (CFN + ECS Fargate)** | `s3://arcnode-artifacts/deployments/<id>/dtm.json` | unset → real AWS S3 |
+| **Cloud (CFN + EC2 + docker-compose)** | `s3://arcnode-artifacts/deployments/<id>/dtm.json` | unset → real AWS S3 |
 | **On-prem ISO appliance** | `s3://arcnode-artifacts/deployments/<id>/dtm.json` | `http://minio:9000` (per `ems/readme.md` On-Prem Deployment minio daemon) |
 | **Dev (docker-compose)** | `s3://arcnode-artifacts/deployments/sample/dtm.json` | `http://localhost:4566` (LocalStack) |
 | **CI / integration tests** | unset → skip fetch | n/a |
@@ -81,7 +81,7 @@ The behavior matrix above is idempotent across pod restarts: device-api never ov
 
 ### Authentication
 
-For real AWS S3 (cloud deployment): standard IAM via ECS task role. Container has S3:GetObject on the artifact bucket. No credentials in the image.
+For real AWS S3 (cloud deployment): standard IAM via EC2 instance role. Container has S3:GetObject on the artifact bucket. No credentials in the image.
 
 For LocalStack / minio: anonymous or static credentials passed via environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). Existing pattern in `edp-api/src/bom_generator/manifest_client.py`.
 
@@ -105,7 +105,7 @@ S3 fetch needs one code path. Endpoint URL is the only differentiation. ISO alre
 
 ### Why fatal-on-404?
 
-A configured `boot_dtm_s3_url` is an operator promise that the object exists at the time the API boots. Missing object means the deployment pipeline (CFN, ISO bake, k8s + S3 sync) skipped a step. Catching that at process start beats discovering it via gateway smoke tests an hour later.
+A configured `boot_dtm_s3_url` is an operator promise that the object exists at the time the API boots. Missing object means the deployment pipeline (CFN, ISO bake, S3 sync step) skipped a step. Catching that at process start beats discovering it via gateway smoke tests an hour later.
 
 ### Why graceful empty when URL unset?
 
@@ -134,7 +134,7 @@ Fetching unconditionally (then deciding whether to apply) surfaces S3-side issue
 - ISO deployments must populate minio with the DTM at imaging time
 
 ### Risks
-- S3 outage during ECS task startup → restart loop. Mitigated by ECS task auto-retry; if S3 is down the cluster has bigger issues.
+- S3 outage during EC2 boot / docker-compose up → container restart loop. Mitigated by Docker restart policy; if S3 is down the deployment has bigger issues.
 - A stale `boot_dtm_s3_url` pointing at a missing object → fatal exit. Error message names the URL; operator updates the deployment.
 - ConfigMap/SSM/CFN parameter mismatch between cfg.yml `boot_dtm_s3_url` and what the deployment pipeline actually uploaded. Standard config-error category; surfaces at boot.
 
