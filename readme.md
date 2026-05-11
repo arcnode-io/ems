@@ -113,6 +113,42 @@ llm -> analyst_api: synthesizes rag dbs and apis call
 analyst_api -> ems_hmi: renders chat
 ```
 
+## Cloud Deployment (AWS)
+
+```plantuml
+rectangle ecs_cluster #line.dashed {
+    rectangle analyst_agent
+    rectangle analyst_model
+    rectangle device_api
+    queue emqx
+    rectangle ems_hmi
+    rectangle mlflow
+    rectangle prometheus
+    rectangle grafana
+    rectangle industrial_gateway
+    rectangle analyst_server
+}
+
+database s3
+
+device_api -> s3: GET dtm.json (boot)
+device_api -> aurora_serverless: persist DTM + version
+
+rectangle managed_persistence #line.dashed {
+    cloud timescale_cloud
+    database aurora_serverless
+    cloud neo4j_aura
+}
+
+rectangle third_party_apis #line.dashed {
+    cloud ercot_api
+    cloud openweather
+    cloud yes_energy
+    cloud permutable
+}
+
+```
+
 ## On-Prem Deployment (ISO)
 
 ```plantuml
