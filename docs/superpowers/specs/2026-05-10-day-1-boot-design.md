@@ -7,7 +7,7 @@
 
 ## Context
 
-Sub-project A landed the canonical Dtm shape, the templates layer, and catalog-aware validation on `POST /topology`. What's missing: when an operator boots an ISO, deploys a CFN/ECS stack, or runs `docker compose up`, `ems-device-api` starts with an empty topology table. `GET /topology` returns 404. The gateway, line-controller, and HMI fetch `/asyncapi` and find nothing useful.
+Sub-project A landed the canonical Dtm shape, the templates layer, and catalog-aware validation on `POST /topology`. What's missing: when an operator boots an ISO, deploys a CFN/EC2 stack, or runs `docker compose up`, `ems-device-api` starts with an empty topology table. `GET /topology` returns 404. The gateway, line-controller, and HMI fetch `/asyncapi` and find nothing useful.
 
 This sub-project closes that gap by fetching a DTM from an S3-compatible endpoint at startup. Per [ADR-003 Boot DTM Source Strategy](../../../boot_strategy_adr.md), **one mechanism (S3 GET with configurable endpoint URL)** covers cloud (real S3), on-prem ISO (minio), and dev (LocalStack). The behavior matrix and failure modes are normative there; this spec is the implementation contract for ems-device-api.
 
@@ -66,7 +66,7 @@ Add `@aws-sdk/client-s3` dependency. Use existing `manifest_client.py` pattern f
 
 - Construct S3Client with optional `endpoint` override
 - Force path-style addressing when endpoint is set (LocalStack/minio compatibility)
-- Standard credential chain (IAM role on ECS, env vars on dev)
+- Standard credential chain (IAM role on EC2, env vars on dev)
 
 ### Boot flow
 
@@ -81,7 +81,7 @@ The seeding step lives in `bootstrap()` in `src/main.ts`, between `NestFactory.c
 6. await app.listen(cfg.port, cfg.host)
 ```
 
-The seed step runs synchronously before the HTTP server listens. If it throws (fatal cases per ADR-003), the process exits. ECS/k8s restart policy handles retry.
+The seed step runs synchronously before the HTTP server listens. If it throws (fatal cases per ADR-003), the process exits. Docker restart policy (via docker-compose) handles retry.
 
 ### `seedFromS3` contract
 
@@ -181,7 +181,7 @@ The `check` stage in `.gitlab-ci.yml` runs unit + integration. Both new tests ru
 
 Add a "Day-1 Boot" section to `ems-device-api/readme.md`:
 
-- Cloud (CFN + ECS): set `bootDtmS3Url` to `s3://arcnode-artifacts/deployments/<id>/dtm.json`. Task IAM role grants `s3:GetObject`. `s3EndpointUrl` unset.
+- Cloud (CFN + EC2 + docker-compose): set `bootDtmS3Url` to `s3://arcnode-artifacts/deployments/<id>/dtm.json`. EC2 instance IAM role grants `s3:GetObject`. `s3EndpointUrl` unset.
 - On-prem ISO: set `bootDtmS3Url` to the canonical key. `s3EndpointUrl` to the on-prem minio (`http://minio:9000`). minio populated at imaging time.
 - Dev (docker-compose): LocalStack container in compose. Sample DTM uploaded via `aws --endpoint-url=http://localhost:4566 s3 cp ...` at startup or via init container.
 - Tests/CI: leave `bootDtmS3Url` unset; tests POST DTMs explicitly.
@@ -200,7 +200,7 @@ Existing tests continue to pass:
 
 | Risk | Mitigation |
 |---|---|
-| S3 outage during boot | ECS task auto-retry; if S3 is down, cluster has bigger issues |
+| S3 outage during boot | Docker restart policy on the device-api container; if S3 is down, deployment has bigger issues |
 | Stale `bootDtmS3Url` pointing at missing object | Fatal exit, error names the URL; operator updates deployment |
 | ISO deployment without minio populated | Fatal exit; docs in readme + ISO bake-time runbook ensure minio is seeded |
 | LocalStack credential mismatch in dev | Standard `AWS_ACCESS_KEY_ID=test`/`AWS_SECRET_ACCESS_KEY=test` pattern; documented in readme |

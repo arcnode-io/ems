@@ -116,7 +116,7 @@ analyst_api -> ems_hmi: renders chat
 ## Cloud Deployment (AWS)
 
 ```plantuml
-rectangle ecs_cluster #line.dashed {
+rectangle ec2_docker_compose #line.dashed {
     rectangle analyst_agent
     rectangle analyst_model
     rectangle device_api
