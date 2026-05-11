@@ -1,8 +1,10 @@
-# Device-API Stateless Refactor — Design
+# Device-API Persistence Swap (Postgres → S3) — Design
 
-**Goal:** Eliminate Postgres + TypeORM from `ems-device-api`. S3 (already used for Day-1 boot per ADR-003) becomes the canonical store for the DTM. Monotonic version counter moves into the DTM JSON itself.
+**Goal:** Swap `ems-device-api`'s persistence backend from Postgres + TypeORM to S3 (already used for Day-1 boot per ADR-003). Monotonic version counter moves into the DTM JSON itself.
 
-**Why this exists:** Audit history was silently introduced in PRs 1–5 via the `topology` table's row-per-save pattern. That unapproved scope justified a Postgres dependency, which justified migration plumbing, repository mocks, and a testcontainer that didn't need to exist. Stateless design aligns with what device-api actually is: a transform/cache layer over an S3 artifact owned by `edp-api`.
+**Terminology note:** Device-api remains a *stateful* service — in-memory DTM cache, versioned topology. What changes is *where* persistence lives: S3 instead of Postgres. This is a storage backend swap, not a statelessness conversion.
+
+**Why this exists:** Audit history was silently introduced in PRs 1–5 via the `topology` table's row-per-save pattern. That unapproved scope justified a Postgres dependency, which justified migration plumbing, repository mocks, and a testcontainer that didn't need to exist. S3-backed persistence aligns with what device-api actually is: a transform/cache layer over an S3 artifact owned by `edp-api`.
 
 **Order of operations rationale:** Refactor lands BEFORE any consumer (gateway stub, line-controller, hmi) is built against the current shape. Architecture cleanup compounds when consumers couple to a wrong shape.
 
@@ -23,7 +25,7 @@
                   edp-api │  (writes once at build time — ISO/CFN. No runtime connection.)
                           │
                           ▼
-                     device-api (stateless transform service)
+                     device-api (stateful service, S3-backed persistence)
                        ├─ in-memory cache of current DTM (refreshed on boot)
                        ├─ POST /topology → fetch S3 → bump version → PUT S3 → broadcast
                        ├─ GET /topology → serve from cache
