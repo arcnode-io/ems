@@ -67,12 +67,12 @@ llm -l-> third_party_apis: http
 ## Sequence
 
 ```plantuml
-participant ems_startup
 participant device_api
+database s3
 database document
+participant broker
 participant industrial_gateway
 participant line_controller
-participant broker
 database timeseries
 database vector
 database graph
@@ -83,9 +83,9 @@ participant ems_hmi
 participant ercot_api
 collections third_party_apis
 == bootstrap ==
-ems_startup -> device_api: mount /etc/ems/dtm.json (from ISO/CFN payload)
-device_api -> device_api: load DTM from disk
-device_api -> document: generate AsyncAPI v3 spec
+device_api -> s3: GET dtm.json (per ADR-003)
+device_api -> document: persist DTM + generate AsyncAPI v3 spec
+device_api -> broker: publish system/topology_changed { ts, version }
 == distribute topics ==
 industrial_gateway -> device_api: GET /asyncapi
 line_controller -> device_api: GET /asyncapi
@@ -130,6 +130,9 @@ rectangle ecs_cluster #line.dashed {
 }
 
 database s3
+
+device_api -> s3: GET dtm.json (boot)
+device_api -> aurora_serverless: persist DTM + version
 
 rectangle managed_persistence #line.dashed {
     cloud timescale_cloud
