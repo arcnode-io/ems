@@ -129,9 +129,8 @@ rectangle ec2_docker_compose #line.dashed {
     rectangle analyst_server
 }
 
-database s3
-
 rectangle managed_persistence #line.dashed {
+    database s3
     cloud timescale_cloud
     database aurora_serverless
     cloud neo4j_aura
