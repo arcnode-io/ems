@@ -6,11 +6,6 @@
 **Consulted:** Operations, Site Integrators
 **Informed:** EMS Subsystem Maintainers
 
-## Revision history
-
-- 2026-05-10 — Initial draft assuming Postgres as runtime persistence + S3 as boot source.
-- 2026-05-10 — Revised after the Postgres→S3 persistence swap (see [persistence swap design](docs/superpowers/specs/2026-05-10-device-api-s3-persistence-swap-design.md)). S3 is now both boot source AND runtime persistence. In-memory cache hydrated from S3 at boot replaces the topology table. Failure-mode table updated.
-
 ## Context
 
 `ems-device-api` needs a DTM at boot to serve `/topology` and `/asyncapi` to its clients (gateway, line-controller, HMI). PR 1 + PR 2 of the redo-device-api foundation just landed the canonical Dtm shape that edp-api emits and device-api consumes. PR 3 added catalog-aware validation on `POST /topology`. None of those answer the question of where the day-1 DTM comes from — when an operator boots an ISO, deploys a CFN/ECS stack, or `docker compose up`s a dev environment, how does device-api find its first DTM?
@@ -45,13 +40,14 @@ ISO deployments override `s3_endpoint_url` to the on-prem minio. The container i
 
 ### Behavior matrix
 
-| `boot_dtm_s3_url` | Runtime state | Action |
+| `boot_dtm_s3_url` | Topology table | Action |
 |---|---|---|
-| set | cold start (no cache) | fetch + parse + validate + hydrate in-memory cache |
-| set | warm restart (cache from prior fetch — N/A pre-runtime; pod restarts always cold) | fetch + hydrate |
-| unset / null | cold start | log "no boot_dtm_s3_url configured; starting empty" + skip fetch (empty cache) |
+| set | empty | fetch + parse + validate + seed |
+| set | populated | fetch + skip seed (don't overwrite operator changes) |
+| unset / null | empty | log "no boot_dtm_s3_url configured; starting empty" + skip |
+| unset / null | populated | log + skip |
 
-Post persistence swap, in-memory cache is the only runtime state. Pod restarts are always cold. The "populated" branch from the prior Postgres-backed design no longer applies — every restart re-hydrates from S3 (which is now both boot source and runtime store).
+Note: when `boot_dtm_s3_url` is set and the table is populated, the fetch still happens (so we surface S3-side issues at boot rather than waiting for the next restart). The result is logged but not applied.
 
 ### Failure modes
 
@@ -62,8 +58,7 @@ Post persistence swap, in-memory cache is the only runtime state. Pod restarts a
 | Object body invalid JSON | **Fatal** | Production config error must surface at boot |
 | Body parses but fails Zod `Dtm` validation | **Fatal** | Schema drift between edp-api and device-api caught at boot |
 | Body validates but `templates_used` slug unknown to bundled catalog | **Fatal** | Catalog drift caught at boot; identical check to POST /topology |
-| S3 unreachable at boot | **Fatal** with restart-loop | Pod restart until S3 healthy; standard k8s/ECS pattern |
-| S3 unreachable at runtime (after boot succeeded) | Reads serve from cache; writes return **503** to client | Cache is authoritative between writes (single-writer model — only device-api writes at runtime, atomic with cache update). Reads continue during transient outages. Writes 503 until S3 returns. |
+| DB write fails (e.g., DB unreachable) | **Fatal** with restart-loop | Pod restart until DB healthy; standard k8s/ECS pattern |
 | `boot_dtm_s3_url` is unset | **Graceful empty start** with info log | Tests / CI / fresh-from-zero deployments |
 
 ### Storage backend per deployment context
@@ -80,7 +75,9 @@ Same code path. Different `s3_endpoint_url`:
 
 ### Idempotency
 
-Post persistence swap, every pod restart re-hydrates the in-memory cache from S3. Whatever is currently in S3 is the truth on the next boot. Operators who need to re-seed write a fresh DTM to the S3 object (via edp-api re-emission for the next ISO/CFN deployment, or via POST /topology at runtime).
+The behavior matrix above is idempotent across pod restarts: device-api never overwrites a populated topology table from a stale fetch. Operators who need to re-seed must either:
+- Clear the topology table (e.g., a database migration step before redeploy)
+- Use sub-project C's dynamic CRUD endpoints when ADR-002 §14 lands
 
 ### Authentication
 
@@ -119,9 +116,9 @@ Tests, CI, and "boot the API to verify it starts" smoke checks should not requir
 
 `ems/readme.md` On-Prem Deployment shows `minio` as a daemon. The on-prem stack already runs S3-compatible storage. Reusing that storage for the boot DTM means zero new infra on the on-prem side.
 
-### Why fetch on every boot?
+### Why fetch on every boot, even when populated?
 
-Post persistence swap there is no "populated state to preserve" — every restart is cold, and S3 is the truth source. One S3 GET per pod start is negligible, and surfaces S3-side issues (stale URL, expired creds, missing object) at boot rather than at the next operator change.
+Fetching unconditionally (then deciding whether to apply) surfaces S3-side issues at boot. Operators detect a stale URL or expired creds during the next restart cycle, not when the next operator change happens. The cost is one S3 GET per pod start — negligible.
 
 ## Consequences
 
