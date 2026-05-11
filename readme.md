@@ -144,8 +144,6 @@ rectangle third_party_apis #line.dashed {
     cloud permutable
 }
 
-device_api -> aurora_serverless: persist DTM + version
-
 ```
 
 ## On-Prem Deployment (ISO)
@@ -176,8 +174,6 @@ rectangle daemons #line.dashed {
     rectangle grafana
 }
 
-device_api -> minio: GET dtm.json (boot, per ADR-003)
-device_api -> postgres_document: persist DTM + version
 ```
 
 ## E2E Testing
