@@ -131,9 +131,6 @@ rectangle ecs_cluster #line.dashed {
 
 database s3
 
-device_api -> s3: GET dtm.json (boot)
-device_api -> aurora_serverless: persist DTM + version
-
 rectangle managed_persistence #line.dashed {
     cloud timescale_cloud
     database aurora_serverless
@@ -146,6 +143,9 @@ rectangle third_party_apis #line.dashed {
     cloud yes_energy
     cloud permutable
 }
+
+device_api -> s3: GET dtm.json (boot)
+device_api -> aurora_serverless: persist DTM + version
 
 ```
 
