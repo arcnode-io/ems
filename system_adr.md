@@ -53,23 +53,17 @@ No Kubernetes. No IaC on operator side. `platform-api` composes the per-order CF
 
 Electrical bus topology is encoded in a `buses[]` block in the DTM. `edp-api` computes `buses[]` from the sizing payload and emits it alongside `devices` in the same job. IEC 61850 alignment: `buses[].id` = `ConnectivityNode`, `buses[].type` = `VoltageLevel` domain, `buses[].members[]` = `Terminal` references, `port` = Terminal name. Bus bars are not devices — no `device_id`, no MQTT topics. HMI renders bars as horizontals with device nodes hanging off; live measurements overlay each device node keyed by `device_id`.
 
-### §7. Cloud persistence: Aurora + Tiger Cloud + Neo4j Aura + S3
-
-*Why.* Aurora is AWS-native Postgres that bills to zero at idle and ships pgvector — one cluster covers document and vector. Tiger Cloud is here for the TimescaleDB features that aren't a flag on stock Postgres (compression, continuous aggregates, hyperfunctions). Neo4j Aura is here for Cypher. Six API tokens at install time is the price of letting the operator never copy a connection string.
-
-| Slice | Service | Provisioning |
+### §7. Cloud persistence: Defense and Commercial Variants
+|                   | Commercial                                     | Defense / sovereign |
 |---|---|---|
-| Document | Aurora serverless PG (`ems_document` db) | `AWS::RDS::DBCluster` |
-| Vector | Aurora serverless PG (`ems_vector` db, `vector` ext) | Same cluster, separate db |
-| Time series | Tiger Cloud | Inline CFN custom-resource Lambda → Tiger REST API |
-| Graph | Neo4j Aura | Inline CFN custom-resource Lambda → Aura REST API |
-| Object | S3 | `AWS::S3::Bucket` (see §22) |
-
-Operator pastes six vendor API tokens as CFN params (Tiger access key + secret + project id; Aura OAuth client + secret + tenant id). Connection strings flow through Secrets Manager into EC2 UserData and the docker-compose stack. Inline Lambdas (~3 KB `Code.ZipFile`) keep the CFN artifact self-contained per §5.
-
-Aurora bootstrap Lambda requires a psycopg2 layer. Single-AZ subnet group. Stack-delete may orphan vendor instances if Delete handler fails; handlers are idempotent (404 → success).
-
-ISO and dev paths use Postgres + Bolt + minio — same protocol surface as cloud, just collocated.
+| Document + Vector | Aurora                                         | Aurora              |
+| Time series       | Tiger Cloud (URL param)                        | Aurora pg_partman   |
+| Graph             | Neo4j Aura (URL param)                         | Neptune             |
+| FTS               | Aura native                                    | AOSS                |
+| Customer params   | 2 connection URLs (Tiger, Aura)                | zero                |
+| Idle cost         | Aurora $0 + Tiger $0-30 + Aura $65 = $65-95/mo | $480/mo             |
+| Customer ops      | sign up at Tiger + Aura, paste 2 URLs          | nothing             |
+*Why.* Defense and sovereign deployments physically can't depend on non-AWS SaaS — FedRAMP authorization, supply-chain review, and GovCloud-region constraints rule out Tiger Cloud and Neo4j Aura. Commercial deployments face none of those constraints and benefit from cheaper, feature-richer managed vendors. The variant is gated by `aws_partition` / `deployment_context` from §5: `govcloud` partition or `defense_forward` context → defense column; everything else → commercial column. App code is identical across variants — abstract `TimeseriesClient` and `GraphClient` shims swap implementations at boot from the cfg.yml-injected connection details. Aurora, S3, and the ISO path (§5) are unaffected.
 
 ## MQTT contract
 
@@ -89,7 +83,7 @@ ISO and dev paths use Postgres + Bolt + minio — same protocol surface as cloud
 ```
 sites/{site_id}/devices/{device_id}/measurements/{measurement}/{unit}        # 6 segments
 sites/{site_id}/devices/{device_id}/commands/{verb}/{target}/{unit}          # 7 segments
-system/{event_type}                                                          # 2 segments
+system/{event_type}                                                          # 2 segment
 ```
 
 Parser switches on slot 4 (`family ∈ {measurements, commands}`). Unitless measurements use literal `none` in the unit slot. Verb enum: `[set, reset, clear, start, stop, enable, disable]`.
@@ -130,7 +124,7 @@ Gateway code is codegenned from the spec.
 
 *Why.* Quality information is rare and recoverable. Don't pay wire bytes for it on every sample. Industrial historians that need it run the time-join once in an adapter.
 
-Every sample is `{ts, value}`. No quality, no source flags, no correlation IDs. Quality lives in a separate `status` measurement, joined by timestamp at query time (`LATERAL` join of status ≤ sample.ts). `ts` is RFC3339/ISO8601 string with `Z` suffix — ingests natively into TimescaleDB / TigerData `TIMESTAMPTZ`.
+Every sample is `{ts, value}`. No quality, no source flags, no correlation IDs. Quality lives in a separate `status` measurement, joined by timestamp at query time (`LATERAL` join of status ≤ sample.ts). `ts` is RFC3339/ISO8601 string with `Z` suffix — ingests natively into Postgres `TIMESTAMPTZ`.
 
 ### §13. Sample schemas
 

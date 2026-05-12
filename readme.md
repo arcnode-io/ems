@@ -112,7 +112,7 @@ llm -> analyst_api: synthesizes rag dbs and apis call
 analyst_api -> ems_hmi: renders chat
 ```
 
-## Cloud Deployment (AWS)
+## Cloud Deployment — Commercial
 
 ```plantuml
 rectangle ec2_docker_compose #line.dashed {
@@ -129,10 +129,45 @@ rectangle ec2_docker_compose #line.dashed {
 }
 
 rectangle managed_persistence #line.dashed {
-    database s3
-    cloud timescale_cloud
     database aurora_serverless
-    cloud neo4j_aura
+    database s3
+}
+
+rectangle external_managed_vendors #line.dashed {
+    database tiger_cloud
+    database neo4j_aura
+}
+
+rectangle third_party_apis #line.dashed {
+    cloud ercot_api
+    cloud openweather
+    cloud yes_energy
+    cloud permutable
+}
+
+```
+
+## Cloud Deployment — Defense / Sovereign
+
+```plantuml
+rectangle ec2_docker_compose #line.dashed {
+    rectangle analyst_agent
+    rectangle analyst_model
+    rectangle device_api
+    queue emqx
+    rectangle ems_hmi
+    rectangle mlflow
+    rectangle prometheus
+    rectangle grafana
+    rectangle industrial_gateway
+    rectangle analyst_server
+}
+
+rectangle managed_persistence #line.dashed {
+    database aurora_serverless
+    database neptune
+    database aoss
+    database s3
 }
 
 rectangle third_party_apis #line.dashed {
@@ -148,7 +183,7 @@ rectangle third_party_apis #line.dashed {
 
 ```plantuml
 rectangle daemons #line.dashed {
-    database postgres_timescale 
+    database postgres_timeseries 
     database postgres_document 
     database postgres_vector
     database neo4j
