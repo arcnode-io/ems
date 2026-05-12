@@ -313,6 +313,29 @@ URL unset = graceful empty start. `POST /topology` and the §21 CRUD endpoints a
 
 **Out of scope:** bundled default DTM inside the image; mounted-file fallback; env-var inline JSON; Parameter Store / Secrets Manager.
 
+## Seed
+
+### §23. Seed runs as a docker-compose init container
+
+*Why.* EC2 already has every persistence secret in its environment at compose-up time. An init container that exits 0 fits docker-compose's lifecycle — compose blocks dependent services until it returns. Platform-api stays pure (provisioning + handing over secrets); the EMS team owns seed logic. No new Lambda, no new IAM perms.
+
+**Seeded slices** (one time-series variant per deployment):
+
+| Slice | Source | Tool |
+|---|---|---|
+| Vector | Public S3 corpus | `curl` + `psql` against Aurora pgvector |
+| Graph | Public S3 corpus | `curl` + `cypher-shell` (Aura) or Neptune loader API (defense) |
+| Time series | Public S3 SQL dump | `curl` + `psql` against Tiger Cloud or Aurora pg_partman |
+
+**Not seeded by §23:**
+
+- **Document** — DTM is loaded by `ems-device-api` boot per §22.
+- **AOSS index** — auto-populated by Graphiti during the graph seed step (defense variant only).
+
+**Idempotency:** init container checks if the target slice is non-empty before seeding. Re-running `docker compose up` after a healthy seed is a no-op (ms exit). Clearing a slice (manual operator action) gets re-seeded on the next compose-up.
+
+**Trust boundary:** seed scripts live in the EMS repo and execute inside the customer's EC2 instance. 
+
 ## References
 
 - [readme.md](readme.md) — topology, sequence, deployment diagrams
