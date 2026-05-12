@@ -15,7 +15,7 @@ are
 
 ## Project Description
 
-The EMS (Energy Management System) suite is the software that runs on a deployed Arcnode stack. It allows you to model different smart grid systems. For example, you could model a dynamic dlr system with a datacenter load. The bess could be modeled with canbus measurements and the datacenter could be modeled as snmp and redfish readings.
+The EMS (Energy Management System) suite is the software that runs on a deployed Arcnode stack. It allows you to model different smart grid systems. For example, you could model a dynamic dlr system with a datacenter load. The bess could be modeled with modbus measurements and the datacenter could be modeled as snmp and redfish readings.
 
 ## Decisions
 
@@ -47,7 +47,7 @@ rectangle cluster #line.dashed {
 }
 dlr_sensors -d-> line_controller: mqtt
 line_controller -u-> phase_shift_transformer: mqtt
-industrial_gateway -u---> mock_industrial_protocols: modbus\nsnmp\ndnp3\nredfish\ncanbus
+industrial_gateway -u---> mock_industrial_protocols: modbus\nsnmp\ndnp3\nredfish\nbacnet
 line_controller -d-> device_api: http
 industrial_gateway -d-> device_api: http
 ems_hmi -u-> device_api: http
@@ -61,7 +61,7 @@ analyst_api -d-> llm: http
 llm -l-> third_party_apis: http
 ```
 > &ast; MQTT broker ommited for simplicity <br>
-> &ast;&ast; canbus, modbus, dnp3, snmp, and redfish, 
+> &ast;&ast; modbus, dnp3, snmp, redfish, and bacnet/ip 
  
 ## Sequence
 
@@ -138,6 +138,10 @@ rectangle external_managed_vendors #line.dashed {
     database neo4j_aura
 }
 
+rectangle managed_inference #line.dashed {
+    cloud bedrock
+}
+
 rectangle third_party_apis #line.dashed {
     cloud ercot_api
     cloud openweather
@@ -170,6 +174,10 @@ rectangle managed_persistence #line.dashed {
     database s3
 }
 
+rectangle managed_inference #line.dashed {
+    cloud bedrock
+}
+
 rectangle third_party_apis #line.dashed {
     cloud ercot_api
     cloud openweather
@@ -188,10 +196,7 @@ rectangle daemons #line.dashed {
     database postgres_vector
     database neo4j
     database minio
-    rectangle ollama {
-      rectangle llama
-      rectangle nomic_embed
-    }
+    rectangle ollama
     }
 
     rectangle docker_runtime #line.dashed {
