@@ -67,7 +67,6 @@ llm -l-> third_party_apis: http
 
 ```plantuml
 participant device_api
-database s3
 database document
 participant broker
 participant industrial_gateway
@@ -82,8 +81,7 @@ participant ems_hmi
 participant ercot_api
 collections third_party_apis
 == bootstrap ==
-device_api -> s3: GET dtm.json (per system_adr §22)
-device_api -> document: persist DTM + generate AsyncAPI v3 spec
+device_api -> document: read /app/dtm.json, persist DTM + generate AsyncAPI v3 spec (per system_adr §22)
 device_api -> broker: publish system/topology_changed { ts, version }
 == distribute topics ==
 industrial_gateway -> device_api: GET /asyncapi

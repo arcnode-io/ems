@@ -256,62 +256,58 @@ Adding, removing, or updating a device — instantiating an existing template at
 
 ## Boot
 
-### §22. Day-1 DTM via S3-compatible GET, configured by URL
+### §22. Day-1 DTM via flat-file mount, configured by path
 
-*Why.* Earlier multi-mechanism plumbing had four recipes (Docker volume, k8s ConfigMap, ECS sidecar/EFS/S3-fetch, ISO image bake) — each with its own failure modes; operators had to internalize all four. One code path against an S3-compatible endpoint — only the endpoint URL varies — collapses that matrix.
+*Why.* `dtm.json` is config, not data: small (<100 KB), immutable per deployment, frozen at delivery. It belongs in the delivery bundle alongside `docker-compose.yaml` and the env files, not behind a runtime fetch. Treating it as a mounted file removes a runtime dependency on object storage at device-api boot, drops the minio container from the air-gapped variant, and removes LocalStack from the dev inner loop.
 
-Day-1 boot uses one mechanism: an S3-compatible `GetObject` against a URL set via `cfg.yml`. Same code path across cloud, ISO, dev, CI — only the endpoint URL varies.
+Day-1 boot uses one mechanism: read a JSON file at the path set via `cfg.yml`. Same code path across cloud, ISO, dev, CI — only how the file lands at that path varies.
 
 **Config:**
 
 ```yaml
 local:
-  boot_dtm_s3_url: ~                      # null in dev → skip fetch
-  s3_endpoint_url: http://localhost:4566  # LocalStack
+  boot_dtm_path: ~              # null in dev → skip seed
 beta:
-  boot_dtm_s3_url: s3://arcnode-artifacts/deployments/{deployment_id}/dtm.json
-  s3_endpoint_url: ~                      # null = real AWS S3
+  boot_dtm_path: /app/dtm.json  # mounted via docker-compose volume
 ```
-
-ISO overrides `s3_endpoint_url` to on-prem minio. Image is identical across contexts.
 
 **Behavior:**
 
-| `boot_dtm_s3_url` | Topology table | Action |
+| `boot_dtm_path` | Topology table | Action |
 |---|---|---|
-| set | empty | fetch + parse + validate + seed |
-| set | populated | fetch + skip seed (don't overwrite operator changes) |
+| set | empty | read + parse + validate + seed |
+| set | populated | read + skip seed (don't overwrite operator changes) |
 | unset | empty | log + skip (graceful empty start) |
 | unset | populated | log + skip |
 
-Fetch happens unconditionally when URL is set — surfaces S3-side issues at boot rather than at the next restart. Cost is one S3 GET per pod start.
+Read happens unconditionally when path is set — surfaces file-side issues at boot rather than at the next restart.
 
-**Failure modes (all fatal when URL is set):**
+**Failure modes (all fatal when path is set):**
 
 | Failure | Detection |
 |---|---|
-| S3 404 / auth / 4xx / 5xx | S3 SDK |
+| File missing / unreadable | fs |
 | Invalid JSON | JSON parser |
 | Fails Zod `Dtm` validation | Zod |
 | `templates_used` slug unknown to bundled catalog | Same check as `POST /topology` |
 | DB write fails | Fatal with restart-loop (Docker restart policy) |
 
-URL unset = graceful empty start. `POST /topology` and the §21 CRUD endpoints are the canonical mutation surfaces.
+Path unset = graceful empty start. `POST /topology` and the §21 CRUD endpoints are the canonical mutation surfaces.
 
-**Storage backend per context (same code, different endpoint):**
+**Delivery per context (same code, different stager):**
 
-| Context | `boot_dtm_s3_url` | `s3_endpoint_url` |
-|---|---|---|
-| Cloud (CFN + EC2 + docker-compose) | `s3://arcnode-artifacts/deployments/<id>/dtm.json` | unset → real AWS S3 |
-| On-prem ISO | `s3://arcnode-artifacts/deployments/<id>/dtm.json` | `http://minio:9000` |
-| Dev (docker-compose) | `s3://arcnode-artifacts/deployments/sample/dtm.json` | `http://localhost:4566` (LocalStack) |
-| CI / smoke | unset → skip | n/a |
+| Context | How `dtm.json` lands at `/app/dtm.json` |
+|---|---|
+| Cloud (CFN + EC2 + docker-compose) | UserData curls `https://arcnode-public/orders/<id>/dtm.json` to `/opt/arcnode/dtm.json`; compose bind-mounts it read-only into device-api |
+| On-prem ISO | Baked into the ISO at build time at `/opt/arcnode/dtm.json`; compose bind-mounts it read-only |
+| Dev (docker-compose) | A fixture file at `dev-fixtures/dtm.json` is bind-mounted; null path also valid |
+| CI / smoke | path unset → skip; tests POST DTMs via §21 endpoints |
 
-**Auth:** real AWS uses IAM via EC2 instance role (no creds in image); minio/LocalStack uses anonymous or static env-var creds (same pattern as `edp-api/src/bom_generator/manifest_client.py`).
+**Idempotency:** device-api never overwrites a populated topology table from a stale read. To re-seed, clear the table (e.g., a migration step before redeploy) or use §21 CRUD endpoints.
 
-**Idempotency:** device-api never overwrites a populated topology table from a stale fetch. To re-seed, clear the table (e.g., a migration step before redeploy) or use §21 CRUD endpoints.
+**Operator mutation:** `POST /topology` and the §21 CRUD endpoints write directly to the topology document store. Re-mounting a new `dtm.json` and restarting device-api does not overwrite operator state — boot-read is gated on empty-table.
 
-**Out of scope:** bundled default DTM inside the image; mounted-file fallback; env-var inline JSON; Parameter Store / Secrets Manager.
+**Out of scope:** runtime fetch from object storage; bundled default DTM inside the image; env-var inline JSON; Parameter Store / Secrets Manager.
 
 ## Seed
 
