@@ -260,20 +260,11 @@ Adding, removing, or updating a device — instantiating an existing template at
 
 *Why.* `dtm.json` is config, not data: small (<100 KB), immutable per deployment, frozen at delivery. It belongs in the delivery bundle alongside `docker-compose.yaml` and the env files, not behind a runtime fetch. Treating it as a mounted file removes a runtime dependency on object storage at device-api boot, drops the minio container from the air-gapped variant, and removes LocalStack from the dev inner loop.
 
-Day-1 boot uses one mechanism: read a JSON file at the path set via `cfg.yml`. Same code path across cloud, ISO, dev, CI — only how the file lands at that path varies.
-
-**Config:**
-
-```yaml
-local:
-  boot_dtm_path: ~              # null in dev → skip seed
-beta:
-  boot_dtm_path: /app/dtm.json  # mounted via docker-compose volume
-```
+Day-1 boot uses one mechanism: read a JSON file at the path set via the `BOOT_DTM_PATH` env var. Same code path across cloud, ISO, dev, CI — only how the file lands at that path varies. Env-var contract matches the `DOCUMENT_URL` pattern: defaults to unset/skip, deployments set it explicitly.
 
 **Behavior:**
 
-| `boot_dtm_path` | Topology table | Action |
+| `BOOT_DTM_PATH` | Topology table | Action |
 |---|---|---|
 | set | empty | read + parse + validate + seed |
 | set | populated | read + skip seed (don't overwrite operator changes) |
@@ -282,26 +273,26 @@ beta:
 
 Read happens unconditionally when path is set — surfaces file-side issues at boot rather than at the next restart.
 
-**Failure modes (all fatal when path is set):**
+**Failure modes (all fatal when `BOOT_DTM_PATH` is set):**
 
 | Failure | Detection |
 |---|---|
-| File missing / unreadable | fs |
+| Env var set + file missing/unreadable | fs |
 | Invalid JSON | JSON parser |
 | Fails Zod `Dtm` validation | Zod |
 | `templates_used` slug unknown to bundled catalog | Same check as `POST /topology` |
 | DB write fails | Fatal with restart-loop (Docker restart policy) |
 
-Path unset = graceful empty start. `POST /topology` and the §21 CRUD endpoints are the canonical mutation surfaces.
+Env var unset = graceful empty start. `POST /topology` and the §21 CRUD endpoints are the canonical mutation surfaces.
 
 **Delivery per context (same code, different stager):**
 
-| Context | How `dtm.json` lands at `/app/dtm.json` |
+| Context | How `BOOT_DTM_PATH` is set + file lands |
 |---|---|
-| Cloud (CFN + EC2 + docker-compose) | UserData curls `https://arcnode-public/orders/<id>/dtm.json` to `/opt/arcnode/dtm.json`; compose bind-mounts it read-only into device-api |
-| On-prem ISO | Baked into the ISO at build time at `/opt/arcnode/dtm.json`; compose bind-mounts it read-only |
-| Dev (docker-compose) | A fixture file at `dev-fixtures/dtm.json` is bind-mounted; null path also valid |
-| CI / smoke | path unset → skip; tests POST DTMs via §21 endpoints |
+| Cloud (CFN + EC2 + docker-compose) | Compose service block sets `BOOT_DTM_PATH=/app/dtm.json` and bind-mounts `/opt/arcnode/dtm.json` (staged by UserData via `curl https://arcnode-public/orders/<id>/dtm.json`) read-only |
+| On-prem ISO | Same compose contract; ISO bake step writes the file to `/opt/arcnode/dtm.json` |
+| Dev (docker-compose) | Same compose contract with a fixture file at `dev-fixtures/dtm.json`; or omit the env var to skip |
+| CI / smoke | Env var unset → skip; tests POST DTMs via §21 endpoints |
 
 **Idempotency:** device-api never overwrites a populated topology table from a stale read. To re-seed, clear the table (e.g., a migration step before redeploy) or use §21 CRUD endpoints.
 
