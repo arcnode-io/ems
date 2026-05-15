@@ -117,7 +117,7 @@ rectangle ec2_docker_compose #line.dashed {
     rectangle analyst_agent
     rectangle analyst_model
     rectangle device_api
-    queue emqx
+    queue hivemq
     rectangle ems_hmi
     rectangle mlflow
     rectangle prometheus
@@ -156,7 +156,7 @@ rectangle ec2_docker_compose #line.dashed {
     rectangle analyst_agent
     rectangle analyst_model
     rectangle device_api
-    queue emqx
+    queue hivemq
     rectangle ems_hmi
     rectangle mlflow
     rectangle prometheus
@@ -205,7 +205,7 @@ rectangle daemons #line.dashed {
     rectangle analyst_model
     rectangle ems_hmi
     rectangle mlflow
-    queue emqx
+    queue hivemq
     rectangle prometheus
     rectangle grafana
 }

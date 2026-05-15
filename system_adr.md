@@ -14,7 +14,7 @@ Diagrams: see [`readme.md`](readme.md).
 
 *Why.* SCADA shops already speak MQTT. AsyncAPI describes the topics. Picking a non-MQTT bus would mean re-teaching every integrator we work with.
 
-All telemetry flows over MQTT (EMQX). AsyncAPI documents the topics.
+All telemetry flows over MQTT (HiveMQ CE). AsyncAPI documents the topics.
 
 ### §2. No API gateway
 
