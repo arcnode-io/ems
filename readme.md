@@ -28,7 +28,7 @@ The EMS (Energy Management System) suite is the software that runs on a deployed
 ```plantuml
 collections "mock_industrial_protocols**" as mock_industrial_protocols
 rectangle  "front of the meter" #line.dashed {
-  rectangle dlr_utility_envelope
+  rectangle dlr_operating_envelope
   rectangle dlr_pst_sim
 }
 cloud third_party_apis
@@ -44,8 +44,8 @@ rectangle cluster #line.dashed {
     person llm
     rectangle domain_mcp_server
 }
-dlr_utility_envelope -- dlr_pst_sim: mqtt \nor dnp3?
-dlr_utility_envelope -r- ems_hmi: mqtt 
+dlr_operating_envelope -- dlr_pst_sim: mqtt \nor dnp3?
+dlr_operating_envelope -r- ems_hmi: mqtt 
 industrial_gateway -u---> mock_industrial_protocols: modbus\nsnmp\ndnp3\nredfish\nbacnet
 industrial_gateway --> device_api: http
 ems_hmi -u-> device_api: http
