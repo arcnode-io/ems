@@ -29,12 +29,12 @@ The EMS (Energy Management System) suite is the software that runs on a deployed
 collections "mock_industrial_protocols**" as mock_industrial_protocols
 rectangle  "front of the meter" #line.dashed {
   collections dlr_sensors
+  rectangle utility_line_controller
   rectangle phase_shift_transformer
 }
 cloud third_party_apis
 rectangle cluster #line.dashed {
     rectangle industrial_gateway
-    rectangle line_controller
     rectangle device_api
     database timeseries
     database vector
@@ -45,11 +45,11 @@ rectangle cluster #line.dashed {
     person llm
     rectangle domain_mcp_server
 }
-dlr_sensors -d-> line_controller: mqtt
-line_controller -u-> phase_shift_transformer: mqtt
+dlr_sensors -d- utility_line_controller: utility telemetry
+utility_line_controller -- phase_shift_transformer: utility control
+utility_line_controller -r- ems_hmi: mqtt via broker
 industrial_gateway -u---> mock_industrial_protocols: modbus\nsnmp\ndnp3\nredfish\nbacnet
-line_controller -d-> device_api: http
-industrial_gateway -d-> device_api: http
+industrial_gateway --> device_api: http
 ems_hmi -u-> device_api: http
 device_api -r-> document: sql
 analyst_api -l-> timeseries: sql
@@ -61,7 +61,6 @@ analyst_api -d-> llm: http
 llm -l-> third_party_apis: http
 ```
 > &ast; MQTT broker ommited for simplicity <br>
-> &ast;&ast; modbus, dnp3, snmp, redfish, and bacnet/ip 
  
 ## Sequence
 
@@ -70,7 +69,7 @@ participant device_api
 database document
 participant broker
 participant industrial_gateway
-participant line_controller
+participant utility_line_controller
 database timeseries
 database vector
 database graph
@@ -81,16 +80,16 @@ participant ems_hmi
 participant ercot_api
 collections third_party_apis
 == bootstrap ==
-device_api -> document: read /app/dtm.json, persist DTM + generate AsyncAPI v3 spec (per system_adr §22)
+device_api -> document: read /app/dtm.json, persist DTM + generate AsyncAPI v3 spec (per system_adr §23)
 device_api -> broker: publish system/topology_changed { ts, version }
 == distribute topics ==
 industrial_gateway -> device_api: GET /asyncapi
-line_controller -> device_api: GET /asyncapi
-ems_hmi -> device_api: GET /asyncapi
-ems_hmi -> device_api: GET /topology\n(devices + buses[] for module browser + SLD)
+ems_hmi -> device_api: GET /asyncapi\n(channels + schemas + x-protocol-source + x-enum-values)
+ems_hmi -> device_api: GET /topology/view\n(sanitized DTM: devices + buses + per-measurement metadata)
+ems_hmi -> device_api: GET /topology/sld.svg\n(generated SVG, regenerated on every topology change)
 ==  initialize messaging ==
 industrial_gateway -> broker: pub grid protocols
-line_controller -> broker: pub direct sensor data
+utility_line_controller -> broker: pub utility rating/envelope measurements over mqtt
 broker -> timeseries: writes to db
 broker -> ems_hmi: renders live data
 == ml workflows ==
@@ -227,10 +226,11 @@ database timeseries
 participant analyst_api
 
 ci_runner -> device_api: POST /topology (test DTM)
-device_api -> device_api: generate AsyncAPI spec
+device_api -> device_api: generate AsyncAPI spec + /topology/view projection
 
 industrial_gateway -> device_api: GET /asyncapi
 ems_hmi -> device_api: GET /asyncapi
+ems_hmi -> device_api: GET /topology/view
 
 == fixture telemetry ==
 industrial_fixtures -> broker: publish sim measurements
@@ -255,9 +255,9 @@ ci_runner -> analyst_api: verify predictions + chat
 The following repositories make up the EMS suite:
 
 - [`ems-industrial-fixtures`](https://gitlab.com/arcnode-io/ems-industrial-fixtures) 🦀
-- [`ems-line-controller`](https://gitlab.com/arcnode-io/ems-line-controller) 🐍🦀
-- [`ems-line-controller-dlr`](https://gitlab.com/arcnode-io/ems-line-controller-dlr) 🐍
-- [`ems-line-controller-pst`](https://gitlab.com/arcnode-io/ems-line-controller-pst) 🦀
+- [`utility-line-controller`](https://gitlab.com/arcnode-io/utility-line-controller) 🐍🦀
+- [`utility-line-controller-dlr`](https://gitlab.com/arcnode-io/utility-line-controller-dlr) 🐍
+- [`utility-line-controller-pst`](https://gitlab.com/arcnode-io/utility-line-controller-pst) 🦀
 - [`ems-industrial-gateway`](https://gitlab.com/arcnode-io/ems-industrial-gateway) 🦀
 - [`ems-device-api`](https://gitlab.com/arcnode-io/ems-device-api) 🌊
 - [`ems-hmi`](https://gitlab.com/arcnode-io/ems-hmi) 🌊
@@ -265,4 +265,3 @@ The following repositories make up the EMS suite:
 - [`ems-analyst-model`](https://gitlab.com/arcnode-io/ems-analyst-model) 🐍
 - [`ems-analyst-agent`](https://gitlab.com/arcnode-io/ems-analyst-agent) 🐍
 - [`ems-analyst-server`](https://gitlab.com/arcnode-io/ems-analyst-server) 🐍
-
