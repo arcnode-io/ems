@@ -38,8 +38,8 @@ No static config files distributed. Exponential backoff on startup.
 
 *Why.* Rust where memory safety on edge hardware matters. Python where the ML ecosystem lives. TypeScript where the web ecosystem lives. Standardizing on one would force at least one team to fight their toolchain.
 
-- Rust — protocol handling (`industrial-fixtures`, `industrial-gateway`, `line-controller-pst`)
-- Python — ML / agents / `line-controller-dlr`
+- Rust — protocol handling (`industrial-fixtures`, `industrial-gateway`, `dlr-pst-sim`)
+- Python — ML / agents / `dlr-operating-envelope`
 - TypeScript — `device-api`, `hmi`
 
 ### §5. Two deployment paths: CFN or ISO
