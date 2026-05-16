@@ -28,7 +28,7 @@ Frontend SPA calls backend services directly. Each service owns its own auth, CO
 
 | Consumer | Endpoint(s) | What it gets |
 |---|---|---|
-| `ems-industrial-gateway`, `dlr-utility-envelope` | `GET /asyncapi` | Channels + schemas + `x-protocol-source` (per-device connection + binding for the gateway to dial) + `x-enum-values` |
+| `ems-industrial-gateway`, `dlr-operating-envelope` | `GET /asyncapi` | Channels + schemas + `x-protocol-source` (per-device connection + binding for the gateway to dial) + `x-enum-values` |
 | `ems-hmi` | `GET /asyncapi` + `GET /topology/view` + `GET /topology/sld.svg` | Messaging contract; sanitized topology projection (per §22); generated SLD SVG (regenerated on every topology change) |
 | `platform-api`, commissioning tooling | `GET /topology` | Full DTM including gateway-only fields (`connection.host/port/unit_id`, per-measurement `binding`) |
 
