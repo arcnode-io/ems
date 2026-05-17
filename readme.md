@@ -44,8 +44,8 @@ rectangle cluster #line.dashed {
     person llm
     rectangle domain_mcp_server
 }
-dlr_operating_envelope -- dlr_pst_sim: mqtt \nor dnp3?
-dlr_operating_envelope -r- ems_hmi: mqtt 
+dlr_operating_envelope -- dlr_pst_sim: mqtt
+dlr_operating_envelope -- industrial_gateway: dnp3  
 industrial_gateway -u---> mock_industrial_protocols: modbus\nsnmp\ndnp3\nredfish\nbacnet
 industrial_gateway --> device_api: http
 ems_hmi -u-> device_api: http
@@ -67,7 +67,7 @@ participant device_api
 database document
 participant broker
 participant industrial_gateway
-participant utility_line_controller
+participant dlr_operating_envelope
 database timeseries
 database vector
 database graph
@@ -87,7 +87,7 @@ ems_hmi -> device_api: GET /topology/view\n(sanitized DTM: devices + buses + per
 ems_hmi -> device_api: GET /topology/sld.svg\n(generated SVG, regenerated on every topology change)
 ==  initialize messaging ==
 industrial_gateway -> broker: pub grid protocols
-utility_line_controller -> broker: pub utility rating/envelope measurements over mqtt
+dlr_operating_envelope -> industrial_gateway: dnp3
 broker -> timeseries: writes to db
 broker -> ems_hmi: renders live data
 == ml workflows ==
@@ -253,9 +253,9 @@ ci_runner -> analyst_api: verify predictions + chat
 The following repositories make up the EMS suite:
 
 - [`ems-industrial-fixtures`](https://gitlab.com/arcnode-io/ems-industrial-fixtures) 🦀
-- [`utility-line-controller`](https://gitlab.com/arcnode-io/utility-line-controller) 🐍🦀
-- [`utility-line-controller-dlr`](https://gitlab.com/arcnode-io/utility-line-controller-dlr) 🐍
-- [`utility-line-controller-pst`](https://gitlab.com/arcnode-io/utility-line-controller-pst) 🦀
+- [`dlr-operating-envelope`](https://gitlab.com/arcnode-io/dlr-operating-envelope) 🐍
+- [`dlr-pst-sim`](https://gitlab.com/arcnode-io/dlr-pst-sim) 🦀
+- [`dlr-pcb`](https://gitlab.com/arcnode-io/dlr-pcb) 🐍
 - [`ems-industrial-gateway`](https://gitlab.com/arcnode-io/ems-industrial-gateway) 🦀
 - [`ems-device-api`](https://gitlab.com/arcnode-io/ems-device-api) 🌊
 - [`ems-hmi`](https://gitlab.com/arcnode-io/ems-hmi) 🌊
