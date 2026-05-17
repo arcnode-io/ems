@@ -45,7 +45,7 @@ rectangle cluster #line.dashed {
     rectangle domain_mcp_server
 }
 dlr_operating_envelope -- dlr_pst_sim: mqtt
-dlr_operating_envelope -- industrial_gateway: dnp3  
+dlr_operating_envelope --> industrial_gateway: dnp3  
 industrial_gateway -u---> mock_industrial_protocols: modbus\nsnmp\ndnp3\nredfish\nbacnet
 industrial_gateway --> device_api: http
 ems_hmi -u-> device_api: http
