@@ -46,7 +46,7 @@ rectangle cluster #line.dashed {
 }
 dlr_operating_envelope -- dlr_pst_sim: mqtt
 dlr_operating_envelope --> industrial_gateway: dnp3  
-industrial_gateway -u---> mock_industrial_protocols: modbus\nsnmp\ndnp3\nredfish\nbacnet
+industrial_gateway -u---> mock_industrial_protocols
 industrial_gateway --> device_api: http
 ems_hmi -u-> device_api: http
 device_api -r-> document: sql
@@ -59,6 +59,7 @@ analyst_api -d-> llm: http
 llm -l-> third_party_apis: http
 ```
 > &ast; MQTT broker ommited for simplicity <br>
+> &ast;&ast; dnp3, modbus, redfish, snmp, bacnet
  
 ## Sequence
 

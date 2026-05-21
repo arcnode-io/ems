@@ -355,13 +355,19 @@ Env var unset = graceful empty start. `POST /topology` and the §21 CRUD endpoin
 
 ### Decision
 Cloud:
-chat + code:  bedrock.anthropic.claude-opus-4-6  (commercial)
+chat + code:  bedrock.anthropic.claude-sonnet-4-6  (commercial)
 embedding:    bedrock.amazon.titan-embed-text-v2  (commercial, 1024d)
 
 Airgapped (24 GB VRAM tier):
-chat:         ollama.qwen3.6:35b      (Apache 2.0)
+chat:         ollama.gemma4:26b       (Apache 2.0, 26B-A4B MoE)
 code:         ollama.qwen3-coder:30b  (Apache 2.0)
 embedding:    ollama.qwen3-embedding:4b  (Apache 2.0, 1024d via Matryoshka)
+
+*Why gemma4:26b for chat.* The RAG path feeds long context into the chat model.
+On the 2×12 GB VRAM tier gemma4:26b runs 3–7× faster than qwen3.6:35b and degrades
+only 32% from 32k→128k context (qwen3.6 degrades 65%, collapsing to ~9 tok/s).
+Qwen3.6's one real edge is agentic coding — moot here, since qwen3-coder:30b owns
+the code slot. Chat does not need to be the coding champion.
 
 ### Consequences
 - Two pre-built vector dumps (airgapped and cloud); one schema; one seed pipeline.
@@ -377,6 +383,9 @@ embedding:    ollama.qwen3-embedding:4b  (Apache 2.0, 1024d via Matryoshka)
   always-on instance hours; cheaper to ship two artifacts.
 - Llama 3.3 70B airgapped: doesn't fit 24 GB VRAM tier; no upside over Qwen3.6 at
   sizes that do fit.
+- Qwen3.6-35B-A3B as airgapped chat: 3–7× slower than gemma4:26b on the 2×12 GB
+  tier and degrades 65% at 128k context; coding advantage is irrelevant for the
+  chat slot.
 
 ## ADR-025: External Data Sources for Analyst Agent
 
