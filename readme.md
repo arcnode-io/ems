@@ -110,6 +110,8 @@ analyst_api -> ems_hmi: renders chat
 
 ## Cloud Deployment — Commercial
 
+Split-topology: the ec2 stack runs in our AWS. The `industrial_gateway` runs on-prem at the customer site (next to their devices) and dials the cloud broker outbound. Gateway is shipped as a `docker-save` tarball via the platform-api delivery portal; the customer runs `docker load` + `docker run` on their site host.
+
 ```plantuml
 rectangle ec2_docker_compose #line.dashed {
     rectangle analyst_agent
@@ -120,8 +122,11 @@ rectangle ec2_docker_compose #line.dashed {
     rectangle mlflow
     rectangle prometheus
     rectangle grafana
-    rectangle industrial_gateway
     rectangle analyst_server
+}
+
+rectangle customer_site #line.dashed {
+    rectangle industrial_gateway
 }
 
 rectangle managed_persistence #line.dashed {
@@ -145,9 +150,12 @@ rectangle third_party_apis #line.dashed {
     cloud permutable
 }
 
+industrial_gateway --> hivemq: mqtts (outbound from customer site)
 ```
 
 ## Cloud Deployment — Defense / Sovereign
+
+Same split-topology as commercial: gateway runs on-prem at the customer site and dials the cloud broker outbound; shipped as `docker-save` tarball via the delivery portal.
 
 ```plantuml
 rectangle ec2_docker_compose #line.dashed {
@@ -159,8 +167,11 @@ rectangle ec2_docker_compose #line.dashed {
     rectangle mlflow
     rectangle prometheus
     rectangle grafana
-    rectangle industrial_gateway
     rectangle analyst_server
+}
+
+rectangle customer_site #line.dashed {
+    rectangle industrial_gateway
 }
 
 rectangle managed_persistence #line.dashed {
@@ -181,9 +192,13 @@ rectangle third_party_apis #line.dashed {
     cloud permutable
 }
 
+industrial_gateway --> hivemq: mqtts (outbound from customer site)
 ```
 
 ## On-Prem Deployment (ISO)
+
+Appliance/ISO orders bake the industrial-gateway into the live-build image alongside the rest of the stack — no separate tarball. Whole stack runs on the customer's on-site box.
+
 
 ```plantuml
 rectangle daemons #line.dashed {
