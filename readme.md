@@ -4,13 +4,14 @@
 # Overview
 
 This series of repos is designed to teach real world skills when implementing modern energy systems. It covers
-everything from the sensors, to the UI (mobile and web), to predictive models, to AI agents. The three languages used
+everything from the sensors, to the UI (mobile and web), to predictive models, to AI agents. The four languages used
 are
 
 
 - 🌊 Typescript: Realtime UIs and APIs
 - 🐍 Python: LLM/ML Apps and Platform Engineering
 - 🦀 Rust: Grid Protocols and Embedded Systems
+- ☕ Java: Grid-standards intake services (IEEE 2030.5 / OpenADR)
 
 
 ## Project Description
@@ -273,9 +274,8 @@ The following repositories make up the EMS suite:
 - [`dlr-pst-sim`](https://gitlab.com/arcnode-io/dlr-pst-sim) 🦀
 - [`dlr-pcb`](https://gitlab.com/arcnode-io/dlr-pcb) 🐍
 - [`ems-industrial-gateway`](https://gitlab.com/arcnode-io/ems-industrial-gateway) 🦀
+- [`ems-der-control-api`](https://gitlab.com/arcnode-io/ems-der-control-api) ☕
 - [`ems-device-api`](https://gitlab.com/arcnode-io/ems-device-api) 🌊
 - [`ems-hmi`](https://gitlab.com/arcnode-io/ems-hmi) 🌊
-- [`ems-analyst-api`](https://gitlab.com/arcnode-io/ems-analyst-api) 🐍
+- [`ems-analyst`](https://gitlab.com/arcnode-io/ems-analyst) 🐍
 - [`ems-analyst-model`](https://gitlab.com/arcnode-io/ems-analyst-model) 🐍
-- [`ems-analyst-agent`](https://gitlab.com/arcnode-io/ems-analyst-agent) 🐍
-- [`ems-analyst-server`](https://gitlab.com/arcnode-io/ems-analyst-server) 🐍
