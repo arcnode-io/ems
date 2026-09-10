@@ -33,7 +33,7 @@ rectangle  "front of the meter" #line.dashed {
   rectangle dlr_pst_sim
 }
 cloud third_party_apis
-actor utility
+cloud utility
 rectangle cluster #line.dashed {
     rectangle industrial_gateway
     rectangle device_api
@@ -41,7 +41,7 @@ rectangle cluster #line.dashed {
     database timeseries
     database vector
     database graph
-    database dercontrol_db
+    database relational
     collections analyst_api
     database document
     collections ems_hmi
@@ -54,8 +54,8 @@ industrial_gateway -u---> mock_industrial_protocols
 industrial_gateway --> device_api: http
 ems_hmi -u-> device_api: http
 device_api -r-> document: sql
-utility --> der_control_api: http (DERControl)
-der_control_api -r-> dercontrol_db: sql
+utility -u- der_control_api: http (DERControl)
+der_control_api -u-> relational: sql
 analyst_api -l-> timeseries: sql
 llm -d-> domain_mcp_server: mcp
 domain_mcp_server -d-> vector: sql
@@ -77,7 +77,7 @@ participant industrial_gateway
 participant dlr_operating_envelope
 participant utility
 participant der_control_api
-database dercontrol_db
+database relational
 database timeseries
 database vector
 database graph
@@ -102,7 +102,7 @@ broker -> timeseries: writes to db
 broker -> ems_hmi: renders live data
 == der dispatch (IP-native DNP3 twin) ==
 utility -> der_control_api: POST /der-events (DERControl)
-der_control_api -> dercontrol_db: persist (upsert by mRID)
+der_control_api -> relational: persist (upsert by mRID)
 der_control_api -> broker: pub der_dispatch measurements\n(target_active_power, event_active, energize_enabled)
 broker -> ems_hmi: Grid Events / DER Control panel
 == ml workflows ==
