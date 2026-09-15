@@ -1,6 +1,6 @@
 # ADR-002: MQTT Topic Structure and Payload Conventions
 
-**Status:** Accepted (revised 2026-05-09 — see §14)
+**Status:** Accepted (revised 2026-09-15 — see §6, §15)
 **Date:** 2026-04-25
 **Decision Makers:** Development Team
 **Consulted:** Energy Domain SMEs, Customer Operators
@@ -16,6 +16,8 @@
   PR-gated; git history is the version source. `vN` reserved for future
   fleet-management work. §14 implications updated: HMI is read-only and not
   a CRUD client.
+- 2026-09-15 — §6 concrete per-template message schemas; §15 spec generation
+  layers added.
 
 ## Context
 
@@ -135,13 +137,13 @@ x-source:
 **Decision**: Four sample schemas in the spec.
 
 ```
-FloatSample    { ts, value: number }
-BooleanSample  { ts, value: boolean }
-EnumSample     { ts, value: string }   # value constrained to enum:[...] in the channel schema
+FloatSample    { ts, value: number }   # base shape
+BooleanSample  { ts, value: boolean }  # base shape
+EnumSample     { ts, value: string }   # base shape
 TriggerSample  { ts }                  # commands only — reset, clear, fire-and-forget
 ```
 
-The `EnumSample` channel schema in the generated AsyncAPI spec sets `value.enum` to the ordered list of label keys from the template `values:` block (e.g. `["AUTO", "MANUAL", "RUNPQ"]`). The gateway translates raw register integers to the matching label before publish; the HMI renders the label it receives — no int-to-string logic in any consumer.
+The four base shapes are the wire contract. The generated spec additionally derives one concrete message schema per (template, measurement) and per (template, command) from the template catalog, named `<Template>_<Name>` under `components.schemas`: enum-typed values carry `value.enum` = the template's `values:` labels in register-code order (e.g. `["OPEN", "CLOSED", "TRIPPED"]`); float-typed values carry `value.minimum` / `value.maximum` from `bounds:`. A `set` command's value schema is that of the measurement named by its `target` — every command target names a measurement in the same template. Each family × wire-type channel lists the concrete messages of its type as `messages` (AsyncAPI 3 `oneOf`); channel count is fixed, and schema count is bounded by the template catalog, never by deployment inventory (§15). Publishers validate against the concrete schema before publish; consumers validate on receipt. The gateway translates raw register integers to the matching label before publish; the HMI renders the label it receives — no int-to-string logic in any consumer.
 
 **Rationale**: Symmetric across measurements and commands where shape matches; trigger is command-only (a `reset` has no payload value).
 
@@ -276,6 +278,20 @@ Consumers that are not devices — `ems-hmi`, `ems-analyst-server`, `platform-ap
 - `system/topology_changed` is fired exactly once per successful mutation; transactional CRUD groups multiple changes into one broadcast.
 - **`ems-hmi` is not a CRUD client.** It remains read-only against `/topology` and `/asyncapi` for the module browser, SLD rendering, and live telemetry. It does not call POST/PUT/DELETE on devices. Dynamic CRUD endpoints are invoked by `platform-api` (bulk delivery), commissioning workflows, and integrator/operator tooling outside the HMI surface. Authorization model belongs in a future ADR-004.
 - Persistence layer must retain history: every CRUD produces a new versioned topology row so the AsyncAPI version monotonically increases and audit reconstruction is possible.
+
+#### 15. Spec Generation Layers
+
+**Decision**: The generated spec is built from three inputs with different change rates. Only the first two shape anything a consumer compiles against.
+
+| Layer | Content | Changes when | Source of truth |
+|---|---|---|---|
+| Protocol | family × wire-type channels, unit vocabulary, `{ts, value}` base shapes, QoS/retain per family (§11) | this ADR is revised | `ems-device-api` spec generator |
+| Template | per-template measurement/command names, wire types, enum labels, bounds (§6) | a template lands via PR (§7) | `edp-api/device_templates/`, mirrored into `ems-device-api` |
+| Inventory | which `device_id`s exist, parent chain, connections | runtime device CRUD (§14) | the DTM `devices` block |
+
+Consumers generate code from the protocol and template layers and read the inventory layer at runtime (`GET /topology`). `ems-device-api` serves two specs from one generator: `/asyncapi/catalog`, built from the full template catalog — the codegen target; and `/asyncapi`, built from the deployment's `templates_used` and `devices` — the per-site runtime and documentation view. Inventory never enters `components` or `channels`; it appears only in `x-*` extensions and parameter `examples`, which codegen ignores.
+
+**Rationale**: a consumer must rebuild when a supported-hardware contract changes, and must not rebuild when a customer commissions another instance of hardware already supported. Deriving schemas from templates rather than from devices gives both — real per-measurement validation and codegen'd types, on a spec whose structure is independent of fleet size.
 
 ## Consequences
 
