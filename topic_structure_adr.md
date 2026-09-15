@@ -1,6 +1,6 @@
 # ADR-002: MQTT Topic Structure and Payload Conventions
 
-**Status:** Accepted (revised 2026-09-15 — see §6, §15)
+**Status:** Accepted (revised 2026-09-15 — see §6, §15, §16)
 **Date:** 2026-04-25
 **Decision Makers:** Development Team
 **Consulted:** Energy Domain SMEs, Customer Operators
@@ -17,7 +17,7 @@
   fleet-management work. §14 implications updated: HMI is read-only and not
   a CRUD client.
 - 2026-09-15 — §6 concrete per-template message schemas; §15 spec generation
-  layers added.
+  layers and §16 setpoint arbitration added.
 
 ## Context
 
@@ -289,9 +289,15 @@ Consumers that are not devices — `ems-hmi`, `ems-analyst-server`, `platform-ap
 | Template | per-template measurement/command names, wire types, enum labels, bounds (§6) | a template lands via PR (§7) | `edp-api/device_templates/`, mirrored into `ems-device-api` |
 | Inventory | which `device_id`s exist, parent chain, connections | runtime device CRUD (§14) | the DTM `devices` block |
 
-Consumers generate code from the protocol and template layers and read the inventory layer at runtime (`GET /topology`). `ems-device-api` serves two specs from one generator: `/asyncapi/catalog`, built from the full template catalog — the codegen target; and `/asyncapi`, built from the deployment's `templates_used` and `devices` — the per-site runtime and documentation view. Inventory never enters `components` or `channels`; it appears only in `x-*` extensions and parameter `examples`, which codegen ignores.
+Consumers generate code from the protocol and template layers and read the inventory layer at runtime (`GET /topology`). `ems-device-api` serves one spec, `/asyncapi`, built from the deployment's `templates_used` and `devices` — the per-site runtime and documentation view. The codegen target is the same generator run over the full template catalog in CI and published as a versioned artifact, not a served endpoint: builds must not depend on a running service. Inventory never enters `components` or `channels`; it appears only in `x-*` extensions and parameter `examples`, which codegen ignores.
 
 **Rationale**: a consumer must rebuild when a supported-hardware contract changes, and must not rebuild when a customer commissions another instance of hardware already supported. Deriving schemas from templates rather than from devices gives both — real per-measurement validation and codegen'd types, on a spec whose structure is independent of fleet size.
+
+#### 16. Setpoint Arbitration During DER Events
+
+**Decision**: While a DER event is active, `ems-der-control-api` owns the active-power setpoint of every asset it dispatches to. Any other writer of `…/commands/set/active_power/…` on those assets — HMI economic dispatch, autopilot, tooling — checks the retained `der_dispatch/measurements/event_active` before publishing and holds off while it is `true`, surfacing the lockout to the operator. Outside an event, ordinary writers own the setpoint.
+
+**Rationale**: a utility-contracted curtailment carries a compliance obligation; an economic dispatch does not. The priority is unambiguous, and the flag that expresses it is already on the wire — arbitration is a subscriber convention, not a new component. A broker-side gate is deferred: Mosquitto cannot enforce one, and a policy service is not warranted at MVP.
 
 ## Consequences
 
