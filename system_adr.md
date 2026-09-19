@@ -28,7 +28,7 @@ Frontend SPA calls backend services directly. Each service owns its own auth, CO
 
 | Consumer | Endpoint(s) | What it gets |
 |---|---|---|
-| `ems-industrial-gateway`, `dlr-operating-envelope` | `GET /asyncapi` | Channels + schemas + `x-protocol-source` (per-device connection + binding for the gateway to dial) + `x-enum-values` |
+| `ems-industrial-gateway`, `dlr-rtu-firmware` | `GET /asyncapi` | Channels + schemas + `x-protocol-source` (per-device connection + binding for the gateway to dial) + `x-enum-values` |
 | `ems-hmi` | `GET /asyncapi` + `GET /topology/view` + `GET /topology/sld.svg` | Messaging contract; sanitized topology projection (per §22); generated SLD SVG (regenerated on every topology change) |
 | `platform-api`, commissioning tooling | `GET /topology` | Full DTM including gateway-only fields (`connection.host/port/unit_id`, per-measurement `binding`) |
 
@@ -38,8 +38,8 @@ No static config files distributed. Exponential backoff on startup.
 
 *Why.* Rust where memory safety on edge hardware matters. Python where the ML ecosystem lives. TypeScript where the web ecosystem lives. Standardizing on one would force at least one team to fight their toolchain.
 
-- Rust — protocol handling (`industrial-fixtures`, `industrial-gateway`, `dlr-pst-sim`)
-- Python — ML / agents / `dlr-operating-envelope`
+- Rust — protocol handling (`industrial-fixtures`, `industrial-gateway`, `dlr-tap-regulator-sim`)
+- Python — ML / agents / `dlr-rtu-firmware`
 - TypeScript — `device-api`, `hmi`
 
 ### §5. Two deployment paths: CFN or ISO
