@@ -27,14 +27,9 @@ The EMS (Energy Management System) suite is the software that runs on a deployed
 ## Deployment*
 
 ```plantuml
-collections "mock_industrial_protocols**" as mock_industrial_protocols
-rectangle  "front of the meter" #line.dashed {
-  rectangle dlr_operating_envelope
-  rectangle dlr_pst_sim
-}
 cloud third_party_apis
-cloud utility
-rectangle cluster #line.dashed {
+rectangle ems #line.dashed {
+collections "mock_industrial_protocols**" as mock_industrial_protocols
     rectangle industrial_gateway
     rectangle device_api
     rectangle der_control_api
@@ -48,13 +43,18 @@ rectangle cluster #line.dashed {
     person llm
     rectangle domain_mcp_server
 }
-dlr_operating_envelope -- dlr_pst_sim: mqtt
-dlr_operating_envelope --> industrial_gateway: dnp3  
-industrial_gateway -u---> mock_industrial_protocols
+rectangle  mock_derms #line.dashed {
+  rectangle dlr_tap_regulator_sim
+  rectangle dlr_rtu
+  rectangle dispatch_api
+}
+dlr_rtu -d- dispatch_api: mqtt
+dlr_tap_regulator_sim - dlr_rtu: mqtt
+dispatch_api -l- der_control_api: http
+industrial_gateway -u-> mock_industrial_protocols
 industrial_gateway --> device_api: http
 ems_hmi -u-> device_api: http
 device_api -r-> document: sql
-utility -u- der_control_api: http (DERControl)
 der_control_api -u-> relational: sql
 analyst_api -l-> timeseries: sql
 llm -d-> domain_mcp_server: mcp
@@ -68,14 +68,13 @@ llm -l-> third_party_apis: http
 > &ast;&ast; dnp3, modbus, redfish, snmp, bacnet
  
 ## Sequence
-
+### Default Use
 ```plantuml
 participant device_api
 database document
 participant broker
 participant industrial_gateway
-participant dlr_operating_envelope
-participant utility
+participant dispatch_api
 participant der_control_api
 database relational
 database timeseries
@@ -97,11 +96,10 @@ ems_hmi -> device_api: GET /topology/view\n(sanitized DTM: devices + buses + per
 ems_hmi -> device_api: GET /topology/sld.svg\n(generated SVG, regenerated on every topology change)
 ==  initialize messaging ==
 industrial_gateway -> broker: pub grid protocols
-dlr_operating_envelope -> industrial_gateway: dnp3
 broker -> timeseries: writes to db
 broker -> ems_hmi: renders live data
 == der dispatch (IP-native DNP3 twin) ==
-utility -> der_control_api: POST /der-events (DERControl)
+dispatch_api -> der_control_api: POST /der-events (DERControl)
 der_control_api -> relational: persist (upsert by mRID)
 der_control_api -> broker: pub der_dispatch measurements\n(target_active_power, event_active, energize_enabled)
 broker -> ems_hmi: Grid Events / DER Control panel
@@ -120,6 +118,44 @@ llm -> analyst_api: api prediction tool call
 analyst_api -> llm: prediction response
 llm -> analyst_api: synthesizes rag dbs and apis call
 analyst_api -> ems_hmi: renders chat
+```
+
+## DER Event
+```plantuml
+participant gridstatus_api
+participant dlr_rtu
+participant dispatch_api
+participant der_control_api
+participant broker
+participant dlr_tap_regulator_sim
+
+== day-ahead forecast ==
+gridstatus_api -> dispatch_api: load + weather forecast
+dispatch_api -> dispatch_api: compute headroom curve (rating - forecast load)
+
+== real-time monitoring ==
+dlr_rtu -> dispatch_api: live rating (mqtt)
+dlr_rtu -> dlr_tap_regulator_sim: live rating (mqtt)
+note right of dlr_tap_regulator_sim: independent voltage-regulation loop\nno path to der_control_api
+gridstatus_api -> dispatch_api: live loading
+dispatch_api -> dispatch_api: trigger check (loading vs rating margin)
+
+== constraint dispatch ==
+dispatch_api -> dispatch_api: identify enrolled DER(s) + compute magnitude
+dispatch_api -> der_control_api: POST /der-events (DERControl)
+
+== compliance return path ==
+der_control_api -> broker: pub der_dispatch measurements\n(target_active_power, event_active, energize_enabled)
+broker -> dispatch_api: forward (same topic ems_hmi consumes)
+dispatch_api -> dispatch_api: compare target vs measured active power\n(compliance + response time)
+
+== continuous reassessment ==
+dlr_rtu -> dispatch_api: live rating (mqtt)
+gridstatus_api -> dispatch_api: live loading
+dispatch_api -> dispatch_api: event-end check:\nrating recovered (sustained) OR duration >= max_duration_h
+
+== event close ==
+dispatch_api -> der_control_api: POST /der-events (DERControl: event_active=false)
 ```
 
 ## Cloud Deployment — Commercial
@@ -286,9 +322,10 @@ ci_runner -> analyst_api: verify predictions + chat
 The following repositories make up the EMS suite:
 
 - [`ems-industrial-fixtures`](https://gitlab.com/arcnode-io/ems-industrial-fixtures) 🦀
-- [`dlr-operating-envelope`](https://gitlab.com/arcnode-io/dlr-operating-envelope) 🐍
-- [`dlr-pst-sim`](https://gitlab.com/arcnode-io/dlr-pst-sim) 🦀
-- [`dlr-pcb`](https://gitlab.com/arcnode-io/dlr-pcb) 🐍
+- [`dlr-rtu-firmware`](https://gitlab.com/arcnode-io/dlr-rtu-firmware) 🐍
+- [`dlr-tap-regulator-sim`](https://gitlab.com/arcnode-io/dlr-tap-regulator-sim) 🦀
+- [`dlr-rtu-pcb`](https://gitlab.com/arcnode-io/dlr-rtu-pcb) 🐍
+- [`mock-derms-dispatch-api`](https://gitlab.com/arcnode-io/mock-derms-dispatch-api) ☕
 - [`ems-industrial-gateway`](https://gitlab.com/arcnode-io/ems-industrial-gateway) 🦀
 - [`ems-der-control-api`](https://gitlab.com/arcnode-io/ems-der-control-api) ☕
 - [`ems-device-api`](https://gitlab.com/arcnode-io/ems-device-api) 🌊
