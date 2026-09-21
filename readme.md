@@ -50,12 +50,12 @@ rectangle  mock_derms #line.dashed {
 }
 dlr_rtu -d- dispatch_api: mqtt
 dlr_tap_regulator_sim - dlr_rtu: mqtt
-dispatch_api - der_control_api: http
+dispatch_api -d- der_control_api: http
 industrial_gateway -u-> mock_industrial_protocols
 industrial_gateway --> device_api: http
 ems_hmi -u-> device_api: http
 device_api -r-> document: sql
-der_control_api -u-> relational: sql
+der_control_api -d-> relational: sql
 analyst_api -l-> timeseries: sql
 llm -d-> domain_mcp_server: mcp
 domain_mcp_server -d-> vector: sql
