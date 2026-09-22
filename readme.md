@@ -28,8 +28,10 @@ The EMS (Energy Management System) suite is the software that runs on a deployed
 
 ```plantuml
 cloud third_party_apis
+cloud ercot_api 
+
 rectangle ems #line.dashed {
-collections "mock_industrial_protocols**" as mock_industrial_protocols
+    collections "mock_industrial_protocols**" as mock_industrial_protocols
     rectangle industrial_gateway
     rectangle device_api
     rectangle der_control_api
@@ -48,21 +50,23 @@ rectangle  mock_derms #line.dashed {
   rectangle dlr_rtu
   rectangle dispatch_api
 }
+ercot_api -l- dispatch_api: http
 dlr_rtu -d- dispatch_api: mqtt
 dlr_tap_regulator_sim - dlr_rtu: mqtt
 dispatch_api -d- der_control_api: http
-industrial_gateway -u-> mock_industrial_protocols
-industrial_gateway --> device_api: http
-ems_hmi -u-> device_api: http
-device_api -r-> document: sql
-der_control_api -d-> relational: sql
-analyst_api -l-> timeseries: sql
-llm -d-> domain_mcp_server: mcp
-domain_mcp_server -d-> vector: sql
-domain_mcp_server -d-> graph: cypher
-ems_hmi -u-> analyst_api: http
-analyst_api -d-> llm: http
-llm -l-> third_party_apis: http
+industrial_gateway -u- mock_industrial_protocols
+industrial_gateway -- device_api: http
+ems_hmi -u- device_api: http
+device_api -r- document: sql
+der_control_api -d- relational: sql
+
+analyst_api -l- timeseries: sql
+llm -d- domain_mcp_server: mcp
+domain_mcp_server -d- vector: sql
+domain_mcp_server -d- graph: cypher
+ems_hmi -u- analyst_api: http
+analyst_api -d- llm: http
+llm -l- third_party_apis: http
 ```
 > &ast; MQTT broker ommited for simplicity <br>
 > &ast;&ast; dnp3, modbus, redfish, snmp, bacnet
