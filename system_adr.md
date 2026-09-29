@@ -333,7 +333,7 @@ Env var unset = graceful empty start. `POST /topology` and the §21 CRUD endpoin
 
 1. Deploy: every device unprovisioned (`PROVISIONED_AT_COMMISSIONING`), no fixtures running.
 2. Provision: real connection info via `POST /topology`.
-3. Per device: unprovisioned → online ↔ offline. Offline = data stale, per the gateway's per-device `status`.
+3. Per device: unprovisioned (grey in HMI) → online ↔ offline. Offline = data stale.
 4. Commissioning (acceptance tests, permission to operate) is separate; no site-level state derived from addresses.
 
 Fixtures run only in test/demo stacks via a compose overlay. `POST /topology` replaces the whole DTM, so provisioning N devices one at a time is N full gateway reconciles.
