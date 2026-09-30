@@ -338,6 +338,8 @@ Env var unset = graceful empty start. `POST /topology` and the §21 CRUD endpoin
 
 Fixtures run only in test/demo stacks via a compose overlay. `POST /topology` replaces the whole DTM, so provisioning N devices one at a time is N full gateway reconciles.
 
+At sites with a certified power control system, the gateway forwards envelope limits to it and monitors POI compliance; it does not close the import/export loop itself (two loops on one POI error wind each other up). Without one (the demo), the gateway's POI servo is the enforcer.
+
 ## Seed
 
 ### §24. Seed runs as a docker-compose init container
