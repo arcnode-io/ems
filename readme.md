@@ -46,13 +46,13 @@ rectangle ems #line.dashed {
     rectangle domain_mcp_server
 }
 rectangle  mock_derms #line.dashed {
-  rectangle dlr_tap_regulator_sim
+  rectangle dlr_line_loading_sim
   rectangle dlr_rtu
   rectangle dispatch_api
 }
 ercot_api -l- dispatch_api: http
 dlr_rtu -d- dispatch_api: mqtt
-dlr_tap_regulator_sim - dlr_rtu: mqtt
+dlr_line_loading_sim - dlr_rtu: mqtt
 dispatch_api -d- der_control_api: http
 industrial_gateway -u- mock_industrial_protocols
 industrial_gateway -- device_api: http
@@ -124,42 +124,51 @@ llm -> analyst_api: synthesizes rag dbs and apis call
 analyst_api -> ems_hmi: renders chat
 ```
 
-## DER Event
+## DER Event Auto
 ```plantuml
-participant gridstatus_api
+participant ercot_api
+participant dlr_line_loading_sim
 participant dlr_rtu
 participant dispatch_api
 participant der_control_api
+database relational
 participant broker
-participant dlr_tap_regulator_sim
-
-== day-ahead forecast ==
-gridstatus_api -> dispatch_api: load + weather forecast
-dispatch_api -> dispatch_api: compute headroom curve (rating - forecast load)
+participant industrial_gateway
+participant bess_module
+participant ems_hmi
 
 == real-time monitoring ==
+ercot_api -> dispatch_api: North-zone load (real-time, debounced/cached)
 dlr_rtu -> dispatch_api: live rating (mqtt)
-dlr_rtu -> dlr_tap_regulator_sim: live rating (mqtt)
-note right of dlr_tap_regulator_sim: independent voltage-regulation loop\nno path to der_control_api
-gridstatus_api -> dispatch_api: live loading
-dispatch_api -> dispatch_api: trigger check (loading vs rating margin)
+dlr_rtu -> dlr_line_loading_sim: live rating (mqtt)
+dispatch_api -> dispatch_api: trigger check (zone load tightens rating margin)
 
 == constraint dispatch ==
 dispatch_api -> dispatch_api: identify enrolled DER(s) + compute magnitude
 dispatch_api -> der_control_api: POST /der-events (DERControl)
-
-== compliance return path ==
+der_control_api -> relational: persist (upsert by mRID)
 der_control_api -> broker: pub der_dispatch measurements\n(target_active_power, event_active, energize_enabled)
-broker -> dispatch_api: forward (same topic ems_hmi consumes)
-dispatch_api -> dispatch_api: compare target vs measured active power\n(compliance + response time)
+der_control_api -> broker: pub operating_envelope measurements\n(import_limit, export_limit)
+broker -> ems_hmi: Grid Events / DER Control panel
+broker -> industrial_gateway: forward operating_envelope
+
+== envelope actuation ==
+industrial_gateway -> industrial_gateway: compute headroom\n(operating_envelope.import_limit - bess_module.active_power)
+industrial_gateway -> bess_module: modbus write (envelope actuation setpoint)
+
+== compliance return path (IEEE 2030.5 MirrorUsagePoint) ==
+industrial_gateway -> bess_module: modbus read (active_power)
+industrial_gateway -> broker: pub der_dispatch measurements\n(actual_active_power)
+der_control_api -> dispatch_api: POST MirrorUsagePoint (scheduled tick, ~15s)\n(actual_active_power)
+dispatch_api -> dispatch_api: verify compliance, arm's-length\n(no broker access — utility can't see ArcNode's internal MQTT)
 
 == continuous reassessment ==
+ercot_api -> dispatch_api: North-zone load
 dlr_rtu -> dispatch_api: live rating (mqtt)
-gridstatus_api -> dispatch_api: live loading
 dispatch_api -> dispatch_api: event-end check:\nrating recovered (sustained) OR duration >= max_duration_h
 
 == event close ==
-dispatch_api -> der_control_api: POST /der-events (DERControl: event_active=false)
+dispatch_api -> der_control_api: POST /der-events (DERControl: EventStatus=COMPLETED|CANCELLED)
 ```
 
 ## Cloud Deployment — Commercial
@@ -327,7 +336,7 @@ The following repositories make up the EMS suite:
 
 - [`ems-industrial-fixtures`](https://gitlab.com/arcnode-io/ems-industrial-fixtures) 🦀
 - [`dlr-rtu-firmware`](https://gitlab.com/arcnode-io/dlr-rtu-firmware) 🐍
-- [`dlr-tap-regulator-sim`](https://gitlab.com/arcnode-io/dlr-tap-regulator-sim) 🦀
+- [`dlr-line-loading-sim`](https://gitlab.com/arcnode-io/dlr-line-loading-sim) 🦀
 - [`dlr-rtu-pcb`](https://gitlab.com/arcnode-io/dlr-rtu-pcb) 🐍
 - [`mock-derms-dispatch-api`](https://gitlab.com/arcnode-io/mock-derms-dispatch-api) ☕
 - [`ems-industrial-gateway`](https://gitlab.com/arcnode-io/ems-industrial-gateway) 🦀
