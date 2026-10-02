@@ -52,7 +52,7 @@ rectangle  mock_derms #line.dashed {
 }
 ercot_api -l- dispatch_api: http
 dlr_rtu -d- dispatch_api: mqtt
-dlr_line_loading_sim - dlr_rtu: mqtt
+dlr_line_loading_sim - dispatch_api: mqtt
 dispatch_api -d- der_control_api: http
 industrial_gateway -u- mock_industrial_protocols
 industrial_gateway -- device_api: http
@@ -140,8 +140,8 @@ participant ems_hmi
 == real-time monitoring ==
 ercot_api -> dispatch_api: North-zone load (real-time, debounced/cached)
 dlr_rtu -> dispatch_api: live rating (mqtt)
-dlr_rtu -> dlr_line_loading_sim: live rating (mqtt)
-dispatch_api -> dispatch_api: trigger check (zone load tightens rating margin)
+dlr_line_loading_sim -> dispatch_api: live loading (mqtt)
+dispatch_api -> dispatch_api: trigger check (loading vs rating margin, zone load tightens it)
 
 == constraint dispatch ==
 dispatch_api -> dispatch_api: identify enrolled DER(s) + compute magnitude
