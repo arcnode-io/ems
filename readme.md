@@ -210,8 +210,7 @@ rectangle managed_inference #line.dashed {
 rectangle third_party_apis #line.dashed {
     cloud ercot_api
     cloud openweather
-    cloud yes_energy
-    cloud permutable
+    cloud gridstatus
 }
 
 industrial_gateway --> hivemq: mqtts (outbound from customer site)
@@ -253,8 +252,7 @@ rectangle managed_inference #line.dashed {
 rectangle third_party_apis #line.dashed {
     cloud ercot_api
     cloud openweather
-    cloud yes_energy
-    cloud permutable
+    cloud gridstatus
 }
 
 industrial_gateway --> hivemq: mqtts (outbound from customer site)
