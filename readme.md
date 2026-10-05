@@ -269,7 +269,6 @@ rectangle daemons #line.dashed {
     database postgres_document 
     database postgres_vector
     database neo4j
-    database minio
     rectangle ollama
     }
 
