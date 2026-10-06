@@ -50,7 +50,7 @@ rectangle  mock_derms #line.dashed {
   rectangle dlr_rtu
   rectangle dispatch_api
 }
-ercot_api -l- dispatch_api: http
+ercot_api - dispatch_api: http
 dlr_rtu -d- dispatch_api: mqtt
 dlr_line_loading_sim - dispatch_api: mqtt
 dispatch_api -d- der_control_api: http
